@@ -1,9 +1,11 @@
 use std::{
   io::{self, Read, Write},
-  path::Path,
+  path::Path, sync::mpsc::{channel, Receiver},
 };
 
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use ff::PrimeField;
+use halo2curves::{bn256::Bn256, group::Group, CurveAffine};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::traits::Engine;
 
@@ -59,6 +61,80 @@ pub trait CommitmentKeyIO: Sized {
   /// Checks the sanity of the key file
   fn check_sanity_of_file(path: impl AsRef<Path>, required_len_ck_list: usize) -> bool;
 }
+
+use rayon::spawn;
+
+fn read_one<R: Read>(
+  mut reader: R,
+) -> io::Result<(R, Receiver<bn256::Affine>)>
+{
+  let mut xy = [0u8; 64];
+  reader.read_exact(&mut xy)?;
+
+  let (tx, rx) = channel();
+  spawn(move || {
+    let mut x = [0u8; 32];
+    let mut y = [0u8; 32];
+
+    x.copy_from_slice(&xy[..32]);
+    y.copy_from_slice(&xy[32..]);
+
+    let x = bn256::Base::from_repr(x.into()).unwrap();
+    let y = bn256::Base::from_repr(y.into()).unwrap();
+    let p = bn256::Affine::from_xy(x, y).unwrap();
+
+    tx.send(p).unwrap();
+  });
+
+  Ok((reader, rx))
+}
+
+fn read_one3<R: Read>(
+  mut reader: R,
+) -> io::Result<(R, [u8; 64])>
+{
+  let mut xy = [0u8; 64];
+  reader.read_exact(&mut xy)?;
+
+  Ok((reader, xy))
+}
+
+pub fn load_ck_vec2(
+  reader: &mut impl Read,
+  ck_len: usize,
+) -> Vec<bn256::Affine>
+{
+  let mut rxs = Vec::with_capacity(ck_len);
+  let mut reader = reader;
+  for _ in 0..ck_len {
+    let (reader2, rx) = read_one(reader).unwrap();
+    rxs.push(rx);
+    reader = reader2;
+  }
+  rxs.into_par_iter().map(|rx| rx.recv().unwrap()).collect()
+  // rxs.into_iter().map(|rx| rx.recv().unwrap()).collect()
+}
+
+pub fn load_ck_vec3(
+  reader: &mut impl Read,
+  ck_len: usize,
+) -> Vec<bn256::Affine>
+{
+  let mut data = Vec::with_capacity(ck_len);
+  let mut reader = reader;
+  for _ in 0..ck_len {
+    let (reader2, d) = read_one3(reader).unwrap();
+    data.push(d);
+    reader = reader2;
+  }
+  data.into_par_iter().map(|rx| {
+    let x = bn256::Base::from_repr(rx[..32].into()).unwrap();
+    let y = bn256::Base::from_repr(rx[32..].into()).unwrap();
+    bn256::Affine::from_xy(x, y).unwrap()
+  }).collect()
+  // rxs.into_iter().map(|rx| rx.recv().unwrap()).collect()
+}
+
 
 pub fn load_ck_vec<E: Engine>(
   reader: &mut impl Read,

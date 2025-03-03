@@ -1,10 +1,10 @@
 use std::{
   fs::OpenOptions,
-  io::{BufReader, BufWriter},
+  io::{BufReader, BufWriter, Read},
 };
 
 use nova_snark::{
-  provider::{hyperkzg::CommitmentKey, id_of, Bn256EngineKZG, CommitmentKeyIO},
+  provider::{hyperkzg::CommitmentKey, id_of, load_ck_vec2, load_ck_vec3, Bn256EngineKZG, CommitmentKeyIO},
   traits::Engine,
 };
 use rand_core::OsRng;
@@ -68,6 +68,36 @@ fn keygen_save_large() {
   } else {
     println!("Key file already exists at {}", &path);
   }
+
+  let (_, dur) = timeit!(|| {
+    let file = OpenOptions::new().read(true).open(&path).unwrap();
+    let mut reader = BufReader::new(file);
+    // CommitmentKey::<E>::load_from(&mut reader, MAX_NUM_GENS)
+    let mut data = [0u8; 9 + 2 * 64];
+    reader.read_exact(&mut data).unwrap();
+
+    let mut data = [0u8; 64];
+    for _ in 0..MAX_NUM_GENS {
+      reader.read_exact(&mut data).unwrap();
+    }
+    CommitmentKey::<E>::new(Default::default(), Default::default(), Default::default())
+  });
+
+  println!("Loaded {} keys from {} in {:?}", MAX_NUM_GENS, &path, dur);
+
+  let (_, dur) = timeit!(|| {
+    let file = OpenOptions::new().read(true).open(&path).unwrap();
+    let mut reader = BufReader::new(file);
+    // CommitmentKey::<E>::load_from(&mut reader, MAX_NUM_GENS)
+    let mut data = [0u8; 9 + 2 * 64];
+    reader.read_exact(&mut data).unwrap();
+
+    let cks = load_ck_vec3(&mut reader, MAX_NUM_GENS);
+
+    CommitmentKey::<E>::new(cks, Default::default(), Default::default())
+  });
+
+  println!("Loaded {} keys from {} in {:?}", MAX_NUM_GENS, &path, dur);
 
   let (_, dur) = timeit!(|| {
     let file = OpenOptions::new().read(true).open(&path).unwrap();
