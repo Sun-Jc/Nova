@@ -82,6 +82,22 @@ pub trait ConstraintSystem<Scalar: PrimeField>: Sized + Send {
     A: FnOnce() -> AR,
     AR: Into<String>;
 
+  /// Allocate a private variable in the constraint system while providing a hint of max number of bits
+  /// to be used for the variable.
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    _max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.alloc(annotation, f)
+  }
+
   /// Allocate a public variable in the constraint system. The provided function is used to
   /// determine the assignment of the variable.
   fn alloc_input<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
@@ -89,6 +105,22 @@ pub trait ConstraintSystem<Scalar: PrimeField>: Sized + Send {
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>;
+
+  /// Allocate a public variable in the constraint system, while providing a hint of max number of bits
+  /// to be used for the variable.
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    _max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.alloc_input(annotation, f)
+  }
 
   /// Enforce that `A` * `B` = `C`. The `annotation` function is invoked in testing contexts
   /// in order to derive a unique name for the constraint in the current namespace.
@@ -426,5 +458,33 @@ impl<Scalar: PrimeField, CS: ConstraintSystem<Scalar>> ConstraintSystem<Scalar> 
 
   fn aux_slice(&self) -> &[Scalar] {
     (**self).aux_slice()
+  }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    (**self).alloc_with_num_bits(annotation, f, max_num_bits)
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    (**self).alloc_input_with_num_bits(annotation, f, max_num_bits)
   }
 }

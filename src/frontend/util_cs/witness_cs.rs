@@ -41,6 +41,9 @@ where
   // Assignments of variables
   pub(crate) input_assignment: Vec<Scalar>,
   pub(crate) aux_assignment: Vec<Scalar>,
+
+  pub(crate) input_num_bits: Vec<usize>,
+  pub(crate) aux_num_bits: Vec<usize>,
 }
 
 impl<Scalar> WitnessCS<Scalar>
@@ -70,29 +73,28 @@ where
     Self {
       input_assignment,
       aux_assignment: vec![],
+
+      input_num_bits: vec![],
+      aux_num_bits: vec![],
     }
   }
 
-  fn alloc<F, A, AR>(&mut self, _: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    self.aux_assignment.push(f()?);
-
-    Ok(Variable(Index::Aux(self.aux_assignment.len() - 1)))
+    self.alloc_input_with_num_bits(annotation, f, Scalar::NUM_BITS as usize)
   }
 
-  fn alloc_input<F, A, AR>(&mut self, _: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    self.input_assignment.push(f()?);
-
-    Ok(Variable(Index::Input(self.input_assignment.len() - 1)))
+    self.alloc_input_with_num_bits(annotation, f, Scalar::NUM_BITS as usize)
   }
 
   fn enforce<A, AR, LA, LB, LC>(&mut self, _: A, _a: LA, _b: LB, _c: LC)
@@ -171,5 +173,41 @@ where
 
   fn aux_slice(&self) -> &[Scalar] {
     &self.aux_assignment
+  }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    _: A,
+    f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.aux_assignment.push(f()?);
+
+    self.aux_num_bits.push(max_num_bits);
+
+    Ok(Variable(Index::Aux(self.aux_assignment.len() - 1)))
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    _: A,
+    f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.input_assignment.push(f()?);
+
+    self.input_num_bits.push(max_num_bits);
+
+    Ok(Variable(Index::Input(self.input_assignment.len() - 1)))
   }
 }
