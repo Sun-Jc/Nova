@@ -1,5 +1,7 @@
 //! Gadgets representing numbers in the scalar field of the underlying curve.
 
+use core::num;
+
 use ff::{PrimeField, PrimeFieldBits};
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +42,31 @@ impl<Scalar: PrimeField> AllocatedNum<Scalar> {
 
         Ok(tmp)
       },
+    )?;
+
+    Ok(AllocatedNum {
+      value: new_value,
+      variable: var,
+    })
+  }
+
+  /// Allocate a `Variable(Aux)` in a `ConstraintSystem`, while providing max num of bits.
+  pub fn alloc_with_num_bits<CS, F>(mut cs: CS, value: F, num_bits: usize) -> Result<Self, SynthesisError>
+  where
+    CS: ConstraintSystem<Scalar>,
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+  {
+    let mut new_value = None;
+    let var = cs.alloc_input_with_num_bits(
+      || "num",
+      || {
+        let tmp = value()?;
+
+        new_value = Some(tmp);
+
+        Ok(tmp)
+      },
+      num_bits
     )?;
 
     Ok(AllocatedNum {
