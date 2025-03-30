@@ -63,6 +63,9 @@ pub struct TestShapeCS<E: Engine> {
   )>,
   inputs: Vec<String>,
   aux: Vec<String>,
+
+  pub(crate) input_num_bits: Vec<usize>,
+  pub(crate) aux_num_bits: Vec<usize>,
 }
 
 fn proc_lc<Scalar: PrimeField>(
@@ -226,6 +229,8 @@ impl<E: Engine> Default for TestShapeCS<E> {
       constraints: vec![],
       inputs: vec![String::from("ONE")],
       aux: vec![],
+      input_num_bits: vec![],
+      aux_num_bits: vec![],
     }
   }
 }
@@ -236,28 +241,22 @@ where
 {
   type Root = Self;
 
-  fn alloc<F, A, AR>(&mut self, annotation: A, _f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<E::Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    let path = compute_path(&self.current_namespace, &annotation().into());
-    self.aux.push(path);
-
-    Ok(Variable::new_unchecked(Index::Aux(self.aux.len() - 1)))
+    self.alloc_with_num_bits(annotation, f, E::Scalar::NUM_BITS as usize)
   }
 
-  fn alloc_input<F, A, AR>(&mut self, annotation: A, _f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<E::Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    let path = compute_path(&self.current_namespace, &annotation().into());
-    self.inputs.push(path);
-
-    Ok(Variable::new_unchecked(Index::Input(self.inputs.len() - 1)))
+    self.alloc_input_with_num_bits(annotation, f, E::Scalar::NUM_BITS as usize)
   }
 
   fn enforce<A, AR, LA, LB, LC>(&mut self, annotation: A, a: LA, b: LB, c: LC)
@@ -296,6 +295,44 @@ where
 
   fn get_root(&mut self) -> &mut Self::Root {
     self
+  }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    _f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<E::Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    let path = compute_path(&self.current_namespace, &annotation().into());
+    self.aux.push(path);
+
+    self.aux_num_bits.push(max_num_bits);
+
+    Ok(Variable::new_unchecked(Index::Aux(self.aux.len() - 1)))
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    _f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<E::Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    let path = compute_path(&self.current_namespace, &annotation().into());
+    self.inputs.push(path);
+
+    self.input_num_bits.push(max_num_bits);
+
+    Ok(Variable::new_unchecked(Index::Input(self.inputs.len() - 1)))
   }
 }
 

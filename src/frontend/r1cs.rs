@@ -80,7 +80,17 @@ macro_rules! impl_nova_shape {
         C.cols = num_vars + num_inputs;
 
         // Don't count One as an input for shape's purposes.
-        let S = R1CSShape::new(num_constraints, num_vars, num_inputs - 1, A, B, C).unwrap();
+        let S = R1CSShape::new(
+          num_constraints,
+          num_vars,
+          num_inputs - 1,
+          A,
+          B,
+          C,
+          self.aux_num_bits.clone(),
+          self.input_num_bits.clone(),
+        )
+        .unwrap();
         let ck = S.commitment_key(ck_hint);
 
         (S, ck)

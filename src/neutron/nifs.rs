@@ -555,7 +555,17 @@ mod benchmarks {
     let B = A.clone();
     let C = A.clone();
 
-    let S: R1CSShape<E> = R1CSShape::new(num_cons, num_vars, num_io, A, B, C).unwrap();
+    let S: R1CSShape<E> = R1CSShape::new(
+      num_cons,
+      num_vars,
+      num_io,
+      A,
+      B,
+      C,
+      vec![512; num_vars],
+      vec![512; num_io],
+    )
+    .unwrap();
 
     let S = S.pad();
 

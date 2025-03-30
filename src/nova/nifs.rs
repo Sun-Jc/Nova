@@ -494,6 +494,9 @@ mod tests {
         SparseMatrix::new(&A, rows, cols),
         SparseMatrix::new(&B, rows, cols),
         SparseMatrix::new(&C, rows, cols),
+
+        vec![512; num_vars],
+        vec![512; num_io],
       );
       assert!(res.is_ok());
       res.unwrap()
@@ -630,6 +633,8 @@ mod tests {
         SparseMatrix::new(&A, rows, cols),
         SparseMatrix::new(&B, rows, cols),
         SparseMatrix::new(&C, rows, cols),
+        vec![512; num_vars],
+        vec![512; num_io],
       );
       assert!(res.is_ok());
       res.unwrap()

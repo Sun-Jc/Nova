@@ -34,6 +34,11 @@ pub struct R1CSShape<E: Engine> {
   pub(crate) C: SparseMatrix<E::Scalar>,
   #[serde(skip, default = "OnceCell::new")]
   pub(crate) digest: OnceCell<E::Scalar>,
+
+  pub(crate) aux_bit: Vec<usize>,
+  pub(crate) aux_64bit: Vec<usize>,
+  pub(crate) aux_mixed: Vec<usize>,
+  // ! TODO: io_groups
 }
 
 impl<E: Engine> SimpleDigestible for R1CSShape<E> {}
@@ -83,6 +88,9 @@ impl<E: Engine> R1CSShape<E> {
     A: SparseMatrix<E::Scalar>,
     B: SparseMatrix<E::Scalar>,
     C: SparseMatrix<E::Scalar>,
+
+    aux_num_bits: Vec<usize>,
+    _io_num_bits: Vec<usize>,
   ) -> Result<R1CSShape<E>, NovaError> {
     let is_valid = |num_cons: usize,
                     num_vars: usize,
@@ -104,6 +112,27 @@ impl<E: Engine> R1CSShape<E> {
     is_valid(num_cons, num_vars, num_io, &B)?;
     is_valid(num_cons, num_vars, num_io, &C)?;
 
+    let aux_bit = aux_num_bits
+      .iter()
+      .enumerate()
+      .filter(|(_, width)| **width <= 1)
+      .map(|(id, _)| id)
+      .collect();
+
+    let aux_64bit = aux_num_bits
+      .iter()
+      .enumerate()
+      .filter(|(_, width)| **width <= 64 && **width > 1)
+      .map(|(id, _)| id)
+      .collect();
+
+    let aux_mixed = aux_num_bits
+      .iter()
+      .enumerate()
+      .filter(|(_, width)| **width > 64)
+      .map(|(id, _)| id)
+      .collect();
+
     Ok(R1CSShape {
       num_cons,
       num_vars,
@@ -112,6 +141,10 @@ impl<E: Engine> R1CSShape<E> {
       B,
       C,
       digest: OnceCell::new(),
+
+      aux_bit,
+      aux_64bit,
+      aux_mixed,
     })
   }
 
@@ -352,6 +385,10 @@ impl<E: Engine> R1CSShape<E> {
         B: self.B.clone(),
         C: self.C.clone(),
         digest: OnceCell::new(),
+
+        aux_bit: self.aux_bit.clone(),
+        aux_64bit: self.aux_64bit.clone(),
+        aux_mixed: self.aux_mixed.clone(),
       };
     }
 
@@ -388,6 +425,11 @@ impl<E: Engine> R1CSShape<E> {
       B: B_padded,
       C: C_padded,
       digest: OnceCell::new(),
+
+      // * Note: Default is zero
+      aux_bit: self.aux_bit.clone(),
+      aux_64bit: self.aux_64bit.clone(),
+      aux_mixed: self.aux_mixed.clone(),
     }
   }
 
@@ -844,6 +886,8 @@ mod tests {
       SparseMatrix::new(&A, rows, cols),
       SparseMatrix::new(&B, rows, cols),
       SparseMatrix::new(&C, rows, cols),
+      vec![512; num_vars],
+      vec![512; num_io],
     );
     assert!(res.is_ok());
     res.unwrap()

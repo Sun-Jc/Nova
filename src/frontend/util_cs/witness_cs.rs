@@ -2,7 +2,7 @@
 
 use ff::PrimeField;
 
-use crate::frontend::{ConstraintSystem, Index, LinearCombination, SynthesisError, Variable};
+use crate::frontend::{ConstraintSystem, LinearCombination, SynthesisError, Variable};
 
 /// A [`ConstraintSystem`] trait
 pub trait SizedWitness<Scalar: PrimeField> {
@@ -41,9 +41,6 @@ where
   // Assignments of variables
   pub(crate) input_assignment: Vec<Scalar>,
   pub(crate) aux_assignment: Vec<Scalar>,
-
-  pub(crate) input_num_bits: Vec<usize>,
-  pub(crate) aux_num_bits: Vec<usize>,
 }
 
 impl<Scalar> WitnessCS<Scalar>
@@ -73,9 +70,6 @@ where
     Self {
       input_assignment,
       aux_assignment: vec![],
-
-      input_num_bits: vec![],
-      aux_num_bits: vec![],
     }
   }
 
@@ -173,41 +167,5 @@ where
 
   fn aux_slice(&self) -> &[Scalar] {
     &self.aux_assignment
-  }
-
-  fn alloc_with_num_bits<F, A, AR>(
-    &mut self,
-    _: A,
-    f: F,
-    max_num_bits: usize,
-  ) -> Result<Variable, SynthesisError>
-  where
-    F: FnOnce() -> Result<Scalar, SynthesisError>,
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
-    self.aux_assignment.push(f()?);
-
-    self.aux_num_bits.push(max_num_bits);
-
-    Ok(Variable(Index::Aux(self.aux_assignment.len() - 1)))
-  }
-
-  fn alloc_input_with_num_bits<F, A, AR>(
-    &mut self,
-    _: A,
-    f: F,
-    max_num_bits: usize,
-  ) -> Result<Variable, SynthesisError>
-  where
-    F: FnOnce() -> Result<Scalar, SynthesisError>,
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
-    self.input_assignment.push(f()?);
-
-    self.input_num_bits.push(max_num_bits);
-
-    Ok(Variable(Index::Input(self.input_assignment.len() - 1)))
   }
 }

@@ -1,7 +1,5 @@
 //! Gadgets representing numbers in the scalar field of the underlying curve.
 
-use core::num;
-
 use ff::{PrimeField, PrimeFieldBits};
 use serde::{Deserialize, Serialize};
 
@@ -27,31 +25,20 @@ impl<Scalar: PrimeField> Clone for AllocatedNum<Scalar> {
 
 impl<Scalar: PrimeField> AllocatedNum<Scalar> {
   /// Allocate a `Variable(Aux)` in a `ConstraintSystem`.
-  pub fn alloc<CS, F>(mut cs: CS, value: F) -> Result<Self, SynthesisError>
+  pub fn alloc<CS, F>(cs: CS, value: F) -> Result<Self, SynthesisError>
   where
     CS: ConstraintSystem<Scalar>,
     F: FnOnce() -> Result<Scalar, SynthesisError>,
   {
-    let mut new_value = None;
-    let var = cs.alloc(
-      || "num",
-      || {
-        let tmp = value()?;
-
-        new_value = Some(tmp);
-
-        Ok(tmp)
-      },
-    )?;
-
-    Ok(AllocatedNum {
-      value: new_value,
-      variable: var,
-    })
+    Self::alloc_with_num_bits(cs, value, Scalar::NUM_BITS as usize)
   }
 
   /// Allocate a `Variable(Aux)` in a `ConstraintSystem`, while providing max num of bits.
-  pub fn alloc_with_num_bits<CS, F>(mut cs: CS, value: F, num_bits: usize) -> Result<Self, SynthesisError>
+  pub fn alloc_with_num_bits<CS, F>(
+    mut cs: CS,
+    value: F,
+    num_bits: usize,
+  ) -> Result<Self, SynthesisError>
   where
     CS: ConstraintSystem<Scalar>,
     F: FnOnce() -> Result<Scalar, SynthesisError>,
@@ -66,7 +53,7 @@ impl<Scalar: PrimeField> AllocatedNum<Scalar> {
 
         Ok(tmp)
       },
-      num_bits
+      num_bits,
     )?;
 
     Ok(AllocatedNum {

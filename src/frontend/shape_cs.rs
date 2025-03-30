@@ -19,6 +19,9 @@ where
   )>,
   inputs: usize,
   aux: usize,
+
+  pub(crate) input_num_bits: Vec<usize>,
+  pub(crate) aux_num_bits: Vec<usize>,
 }
 
 impl<E: Engine> ShapeCS<E> {
@@ -49,6 +52,8 @@ impl<E: Engine> Default for ShapeCS<E> {
       constraints: vec![],
       inputs: 1,
       aux: 0,
+      input_num_bits: vec![],
+      aux_num_bits: vec![],
     }
   }
 }
@@ -56,26 +61,22 @@ impl<E: Engine> Default for ShapeCS<E> {
 impl<E: Engine> ConstraintSystem<E::Scalar> for ShapeCS<E> {
   type Root = Self;
 
-  fn alloc<F, A, AR>(&mut self, _annotation: A, _f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<E::Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    self.aux += 1;
-
-    Ok(Variable::new_unchecked(Index::Aux(self.aux - 1)))
+    self.alloc_with_num_bits(annotation, f, E::Scalar::NUM_BITS as usize)
   }
 
-  fn alloc_input<F, A, AR>(&mut self, _annotation: A, _f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<E::Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    self.inputs += 1;
-
-    Ok(Variable::new_unchecked(Index::Input(self.inputs - 1)))
+    self.alloc_input_with_num_bits(annotation, f, E::Scalar::NUM_BITS as usize)
   }
 
   fn enforce<A, AR, LA, LB, LC>(&mut self, _annotation: A, a: LA, b: LB, c: LC)
@@ -104,5 +105,41 @@ impl<E: Engine> ConstraintSystem<E::Scalar> for ShapeCS<E> {
 
   fn get_root(&mut self) -> &mut Self::Root {
     self
+  }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    _annotation: A,
+    _f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<E::Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.aux += 1;
+
+    self.aux_num_bits.push(max_num_bits);
+
+    Ok(Variable::new_unchecked(Index::Aux(self.aux - 1)))
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    _annotation: A,
+    _f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<E::Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.inputs += 1;
+
+    self.input_num_bits.push(max_num_bits);
+
+    Ok(Variable::new_unchecked(Index::Input(self.inputs - 1)))
   }
 }
