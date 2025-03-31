@@ -88,15 +88,12 @@ pub trait ConstraintSystem<Scalar: PrimeField>: Sized + Send {
     &mut self,
     annotation: A,
     f: F,
-    _max_num_bits: usize,
+    max_num_bits: usize,
   ) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
-    self.alloc(annotation, f)
-  }
+    AR: Into<String>;
 
   /// Allocate a public variable in the constraint system. The provided function is used to
   /// determine the assignment of the variable.
@@ -112,15 +109,12 @@ pub trait ConstraintSystem<Scalar: PrimeField>: Sized + Send {
     &mut self,
     annotation: A,
     f: F,
-    _max_num_bits: usize,
+    max_num_bits: usize,
   ) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
-    self.alloc_input(annotation, f)
-  }
+    AR: Into<String>;
 
   /// Enforce that `A` * `B` = `C`. The `annotation` function is invoked in testing contexts
   /// in order to derive a unique name for the constraint in the current namespace.
@@ -349,6 +343,36 @@ impl<Scalar: PrimeField, CS: ConstraintSystem<Scalar>> ConstraintSystem<Scalar>
   }
   fn aux_slice(&self) -> &[Scalar] {
     self.0.aux_slice()
+  }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.0.alloc_with_num_bits(annotation, f, max_num_bits)
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self
+      .0
+      .alloc_input_with_num_bits(annotation, f, max_num_bits)
   }
 }
 

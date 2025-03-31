@@ -119,4 +119,32 @@ impl<Scalar: PrimeField, CS: ConstraintSystem<Scalar>> ConstraintSystem<Scalar>
   fn get_root(&mut self) -> &mut Self::Root {
     self
   }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    _max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.alloc(annotation, f)
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    _max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.alloc_input(annotation, f)
+  }
 }

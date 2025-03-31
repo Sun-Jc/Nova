@@ -344,9 +344,13 @@ impl<E: Engine, SC: StepCircuit<E::Scalar>> NeutronAugmentedCircuit<'_, E, SC> {
       &Boolean::from(is_base_case),
     )?;
 
+    let start = std::time::Instant::now();
+
     let z_next = self
       .step_circuit
       .synthesize(&mut cs.namespace(|| "F"), &z_input)?;
+
+    dbg!(start.elapsed());
 
     if z_next.len() != arity {
       return Err(SynthesisError::IncompatibleLengthVector(

@@ -685,3 +685,34 @@ mod tests {
     test_setup_with::<Bn256EngineKZG, GrumpkinEngine>();
   }
 }
+
+#[cfg(test)]
+mod tmp_test{
+  use crate::frontend::{util_cs::witness_cs::WitnessCS, ConstraintSystem};
+  use ff::Field;
+
+  #[test]
+  fn test_bench_alloc_a(){
+    type F = halo2curves::bn256::Fq;
+    let mut cs = WitnessCS::<F>::new();
+    let n = 10000;
+    let start = std::time::Instant::now();
+    for _ in 0..n{
+      cs.alloc_input_with_num_bits(||"", ||Ok(F::ONE), 1).unwrap();
+    }
+    dbg!(start.elapsed().as_nanos() as f64 / n as f64);
+  }
+
+  #[test]
+  fn test_bench_invert(){
+    type F = halo2curves::bn256::Fq;
+    // let mut cs = WitnessCS::<F>::new();
+    let n = 10000;
+    let start = std::time::Instant::now();
+    for _ in 0..n{
+      // cs.alloc_input_with_num_bits(||"", ||Ok(F::ONE), 1).unwrap();
+      F::ONE.invert().unwrap();
+    }
+    dbg!(start.elapsed().as_nanos() as f64 / n as f64);
+  }
+}

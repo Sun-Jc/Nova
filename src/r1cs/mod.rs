@@ -23,6 +23,13 @@ use serde::{Deserialize, Serialize};
 mod sparse;
 pub(crate) use sparse::SparseMatrix;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BitWidth {
+  pub(crate) aux_bit: Vec<usize>,
+  pub(crate) aux_64bit: Vec<usize>,
+  pub(crate) aux_mixed: Vec<usize>,
+}
+
 /// A type that holds the shape of the R1CS matrices
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct R1CSShape<E: Engine> {
@@ -35,9 +42,8 @@ pub struct R1CSShape<E: Engine> {
   #[serde(skip, default = "OnceCell::new")]
   pub(crate) digest: OnceCell<E::Scalar>,
 
-  pub(crate) aux_bit: Vec<usize>,
-  pub(crate) aux_64bit: Vec<usize>,
-  pub(crate) aux_mixed: Vec<usize>,
+  #[serde(skip)]
+  pub(crate) aux_bit_width: BitWidth,
   // ! TODO: io_groups
 }
 
@@ -142,9 +148,11 @@ impl<E: Engine> R1CSShape<E> {
       C,
       digest: OnceCell::new(),
 
-      aux_bit,
-      aux_64bit,
-      aux_mixed,
+      aux_bit_width: BitWidth {
+        aux_bit,
+        aux_64bit,
+        aux_mixed,
+      },
     })
   }
 
@@ -386,9 +394,7 @@ impl<E: Engine> R1CSShape<E> {
         C: self.C.clone(),
         digest: OnceCell::new(),
 
-        aux_bit: self.aux_bit.clone(),
-        aux_64bit: self.aux_64bit.clone(),
-        aux_mixed: self.aux_mixed.clone(),
+        aux_bit_width: self.aux_bit_width.clone(),
       };
     }
 
@@ -427,9 +433,7 @@ impl<E: Engine> R1CSShape<E> {
       digest: OnceCell::new(),
 
       // * Note: Default is zero
-      aux_bit: self.aux_bit.clone(),
-      aux_64bit: self.aux_64bit.clone(),
-      aux_mixed: self.aux_mixed.clone(),
+      aux_bit_width: self.aux_bit_width.clone(),
     }
   }
 

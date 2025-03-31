@@ -2,7 +2,7 @@
 
 use ff::PrimeField;
 
-use crate::frontend::{ConstraintSystem, LinearCombination, SynthesisError, Variable};
+use crate::frontend::{ConstraintSystem, Index, LinearCombination, SynthesisError, Variable};
 
 /// A [`ConstraintSystem`] trait
 pub trait SizedWitness<Scalar: PrimeField> {
@@ -73,22 +73,26 @@ where
     }
   }
 
-  fn alloc<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F, A, AR>(&mut self, _: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    self.alloc_input_with_num_bits(annotation, f, Scalar::NUM_BITS as usize)
+    self.aux_assignment.push(f()?);
+
+    Ok(Variable(Index::Aux(self.aux_assignment.len() - 1)))
   }
 
-  fn alloc_input<F, A, AR>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F, A, AR>(&mut self, _: A, f: F) -> Result<Variable, SynthesisError>
   where
     F: FnOnce() -> Result<Scalar, SynthesisError>,
     A: FnOnce() -> AR,
     AR: Into<String>,
   {
-    self.alloc_input_with_num_bits(annotation, f, Scalar::NUM_BITS as usize)
+    self.input_assignment.push(f()?);
+
+    Ok(Variable(Index::Input(self.input_assignment.len() - 1)))
   }
 
   fn enforce<A, AR, LA, LB, LC>(&mut self, _: A, _a: LA, _b: LB, _c: LC)
@@ -167,5 +171,33 @@ where
 
   fn aux_slice(&self) -> &[Scalar] {
     &self.aux_assignment
+  }
+
+  fn alloc_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    _max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.alloc(annotation, f)
+  }
+
+  fn alloc_input_with_num_bits<F, A, AR>(
+    &mut self,
+    annotation: A,
+    f: F,
+    _max_num_bits: usize,
+  ) -> Result<Variable, SynthesisError>
+  where
+    F: FnOnce() -> Result<Scalar, SynthesisError>,
+    A: FnOnce() -> AR,
+    AR: Into<String>,
+  {
+    self.alloc_input(annotation, f)
   }
 }

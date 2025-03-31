@@ -44,7 +44,7 @@ impl<Scalar: PrimeField> AllocatedNum<Scalar> {
     F: FnOnce() -> Result<Scalar, SynthesisError>,
   {
     let mut new_value = None;
-    let var = cs.alloc_input_with_num_bits(
+    let var = cs.alloc_with_num_bits(
       || "num",
       || {
         let tmp = value()?;
