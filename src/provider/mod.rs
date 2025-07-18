@@ -16,6 +16,8 @@ pub(crate) mod pedersen;
 pub(crate) mod ptau;
 pub(crate) mod traits;
 
+#[cfg(feature = "batch_add")]
+mod batch_add;
 mod msm;
 
 use crate::{

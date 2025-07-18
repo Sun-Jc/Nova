@@ -150,6 +150,7 @@ pub fn msm_small<C: CurveAffine, T: Integer + Into<u64> + Copy + Sync + ToPrimit
   }
 }
 
+#[cfg(not(feature = "batch_add"))]
 fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
   assert_eq!(scalars.len(), bases.len());
   let num_threads = current_num_threads();
@@ -174,6 +175,146 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
       .reduce(C::Curve::identity, |sum, evl| sum + evl)
   } else {
     process_chunk(scalars, bases)
+  }
+}
+
+fn msm_binary_old<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
+  assert_eq!(scalars.len(), bases.len());
+  let num_threads = current_num_threads();
+  let process_chunk = |scalars: &[T], bases: &[C]| {
+    let mut acc = C::Curve::identity();
+    scalars
+      .iter()
+      .zip(bases.iter())
+      .filter(|(scalar, _)| (!scalar.is_zero()))
+      .for_each(|(_, base)| {
+        acc += *base;
+      });
+    acc
+  };
+
+  if scalars.len() > num_threads {
+    let chunk = scalars.len() / num_threads;
+    scalars
+      .par_chunks(chunk)
+      .zip(bases.par_chunks(chunk))
+      .map(|(scalars, bases)| process_chunk(scalars, bases))
+      .sum::<C::Curve>()
+  } else {
+    process_chunk(scalars, bases)
+  }
+}
+
+fn msm_binary_old_im<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
+  assert_eq!(scalars.len(), bases.len());
+  let num_threads = current_num_threads();
+  let process_chunk = |scalars: &[T], bases: &[C]| {
+    let mut acc = C::Curve::identity();
+    scalars
+      .iter()
+      .zip(bases.iter())
+      .filter(|(scalar, _)| (!scalar.is_zero()))
+      .for_each(|(_, base)| {
+        acc += *base;
+      });
+    acc
+  };
+
+  if scalars.len() > num_threads {
+    let chunk = scalars.len() / num_threads;
+    scalars
+      .par_chunks(chunk)
+      .zip(bases.par_chunks(chunk))
+      .map(|(scalars, bases)| process_chunk(scalars, bases))
+      .sum::<C::CurveExt>()
+  } else {
+    process_chunk(scalars, bases)
+  }
+}
+
+#[cfg(feature = "batch_add")]
+fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
+  use crate::provider::batch_add::batch_add_custom;
+
+  assert_eq!(scalars.len(), bases.len());
+  let num_threads = current_num_threads();
+
+  let process_chunk = |scalars: &[T], bases: &[C]| {
+    // let mut points = Vec::with_capacity(bases.len());
+
+    // for i in 0..bases.len() {
+    //   if !scalars[i].is_zero() && bases[i].is_identity().unwrap_u8() == 0 {
+    //     let xy = bases[i].coordinates().unwrap();
+    //     points.push((*xy.x(), *xy.y()));
+    //   }
+    // }
+
+    let mut points = scalars
+      .par_iter()
+      .zip(bases.par_iter())
+      .filter(|(scalar, base)| !scalar.is_zero() && base.is_identity().unwrap_u8() == 0)
+      .map(|(_, base)| {
+        let xy = base.coordinates().unwrap();
+        (*xy.x(), *xy.y())
+      })
+      .collect::<Vec<_>>();
+
+    let res: C::CurveExt = batch_add_custom::<C>(points.len(), &mut points).into();
+
+    res
+  };
+
+  if scalars.len() > num_threads {
+    let chunk_size = scalars.len() / num_threads;
+
+    scalars
+      .par_chunks(chunk_size)
+      .zip(bases.par_chunks(chunk_size))
+      .map(|(scalars, bases)| process_chunk(scalars, bases))
+      .sum::<C::CurveExt>()
+  } else {
+    process_chunk(scalars, bases)
+  }
+}
+
+#[cfg(test)]
+mod tests2 {
+  use std::time::Instant;
+
+  use super::*;
+  use halo2curves::group::Curve;
+  use rand_core::OsRng;
+
+  type C = halo2curves::bn256::G1;
+
+  const N: usize = 1 << 18;
+
+  #[test]
+  fn test_msm_binary() {
+    // random binary coeffs
+    let coeffs = (0..N).map(|_| rand::random::<u8>() % 2).collect::<Vec<_>>();
+    // random bases
+    let bases = (0..N)
+      .map(|_| C::random(OsRng).to_affine())
+      .collect::<Vec<_>>();
+
+    let start = Instant::now();
+    let res = msm_binary(&coeffs, &bases);
+    let dur = start.elapsed();
+
+    let start2 = Instant::now();
+    let res2 = msm_binary_old(&coeffs, &bases);
+    let dur2 = start2.elapsed();
+
+    let start3 = Instant::now();
+    let res3 = msm_binary_old_im(&coeffs, &bases);
+    let dur3 = start3.elapsed();
+
+    println!("msm_binary time: {:?}", dur);
+    println!("msm_binary_old time: {:?}", dur2);
+    println!("msm_binary_old_im time: {:?}", dur3);
+    assert_eq!(res, res2);
+    assert_eq!(res, res3);
   }
 }
 
