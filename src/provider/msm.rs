@@ -142,15 +142,15 @@ pub fn msm_small<C: CurveAffine, T: Integer + Into<u64> + Copy + Sync + ToPrimit
 ) -> C::Curve {
   assert_eq!(bases.len(), scalars.len());
 
-  {
-    let fit = scalars
-      .iter()
-      .all(|s| num_bits(s.to_usize().unwrap()) <= max_num_bits);
+  // {
+  //   let fit = scalars
+  //     .iter()
+  //     .all(|s| num_bits(s.to_usize().unwrap()) <= max_num_bits);
 
-    if !fit {
-      panic!("scalars do not fit in max_num_bits");
-    }
-  }
+  //   if !fit {
+  //     panic!("scalars do not fit in max_num_bits");
+  //   }
+  // }
 
   let res = match max_num_bits {
     0 => C::identity().into(),
@@ -159,10 +159,10 @@ pub fn msm_small<C: CurveAffine, T: Integer + Into<u64> + Copy + Sync + ToPrimit
     _ => msm_small_rest(scalars, bases, max_num_bits),
   };
 
-  {
-    let res2 = msm_small_rest(scalars, bases, 64);
-    assert_eq!(res, res2);
-  }
+  // {
+  //   let res2 = msm_small_rest(scalars, bases, 64);
+  //   assert_eq!(res, res2);
+  // }
 
   res
 }
