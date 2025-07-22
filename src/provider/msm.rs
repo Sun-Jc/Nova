@@ -2,7 +2,7 @@
 //! The generic implementation is adapted from halo2; we add an optimization to commit to bits more efficiently
 //! The specialized implementations are adapted from jolt, with additional optimizations and parallelization.
 use ff::{Field, PrimeField};
-use halo2curves::{group::Group, CurveAffine};
+use halo2curves::{group::Group, msm::msm_best, CurveAffine};
 use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 use rayon::{current_num_threads, prelude::*};
@@ -138,16 +138,33 @@ fn num_bits(n: usize) -> usize {
 pub fn msm_small<C: CurveAffine, T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
   scalars: &[T],
   bases: &[C],
+  max_num_bits: usize,
 ) -> C::Curve {
   assert_eq!(bases.len(), scalars.len());
 
-  let max_num_bits = num_bits(scalars.iter().max().unwrap().to_usize().unwrap());
-  match max_num_bits {
+  {
+    let fit = scalars
+      .iter()
+      .all(|s| num_bits(s.to_usize().unwrap()) <= max_num_bits);
+
+    if !fit {
+      panic!("scalars do not fit in max_num_bits");
+    }
+  }
+
+  let res = match max_num_bits {
     0 => C::identity().into(),
     1 => msm_binary(scalars, bases),
     2..=10 => msm_10(scalars, bases, max_num_bits),
     _ => msm_small_rest(scalars, bases, max_num_bits),
+  };
+
+  {
+    let res2 = msm_small_rest(scalars, bases, 64);
+    assert_eq!(res, res2);
   }
+
+  res
 }
 
 fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
@@ -158,7 +175,7 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
     scalars
       .iter()
       .zip(bases.iter())
-      .filter(|(scalar, _)| (!scalar.is_zero()))
+      .filter(|(scalar, _)| !scalar.is_zero())
       .for_each(|(_, base)| {
         acc += *base;
       });
@@ -398,7 +415,7 @@ mod tests {
         .collect::<Vec<_>>();
       let coeffs_scalar: Vec<F> = coeffs.iter().map(|b| F::from(*b)).collect::<Vec<_>>();
       let general = msm(&coeffs_scalar, &bases);
-      let integer = msm_small(&coeffs, &bases);
+      let integer = msm_small(&coeffs, &bases, bit_width);
 
       assert_eq!(general, integer);
     }

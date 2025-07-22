@@ -50,8 +50,16 @@ impl DlogGroupExt for bn256::Point {
   fn vartime_multiscalar_mul_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
     scalars: &[T],
     bases: &[Self::AffineGroupElement],
+    binary: usize,
+    byte: usize,
   ) -> Self {
-    msm_small(scalars, bases)
+    let binary_scalars = &scalars[..binary];
+    let byte_scalars = &scalars[binary..byte];
+    let binary_bases = &bases[..binary];
+    let byte_bases = &bases[binary..byte];
+    let binary_result = msm_small(binary_scalars, binary_bases, 1);
+    let byte_result = msm_small(byte_scalars, byte_bases, 8);
+    binary_result + byte_result
   }
 
   #[cfg(feature = "blitzar")]

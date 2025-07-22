@@ -498,18 +498,27 @@ where
     ck: &Self::CommitmentKey,
     v: &[T],
     r: &E::Scalar,
+    binary: usize,
+    byte: usize,
   ) -> Self::Commitment {
     assert!(ck.ck.len() >= v.len());
-    Commitment {
-      comm: E::GE::vartime_multiscalar_mul_small(v, &ck.ck[..v.len()])
-        + <E::GE as DlogGroup>::group(&ck.h) * r,
+    let mut result = Commitment {
+      comm: E::GE::vartime_multiscalar_mul_small(v, &ck.ck[..v.len()], binary, byte),
+    };
+
+    if r != &E::Scalar::ZERO {
+      result.comm += <E::GE as DlogGroup>::group(&ck.h) * r;
     }
+
+    result
   }
 
   fn batch_commit_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
     ck: &Self::CommitmentKey,
     v: &[Vec<T>],
     r: &[E::Scalar],
+    binary: usize,
+    byte: usize,
   ) -> Vec<Self::Commitment> {
     assert!(v.len() == r.len());
 
@@ -518,7 +527,7 @@ where
 
     let h = <E::GE as DlogGroup>::group(&ck.h);
 
-    E::GE::batch_vartime_multiscalar_mul_small(v, &ck.ck[..max])
+    E::GE::batch_vartime_multiscalar_mul_small(v, &ck.ck[..max], binary, byte)
       .iter()
       .zip(r.iter())
       .map(|(commit, r_i)| Commitment {

@@ -237,13 +237,18 @@ where
     ck: &Self::CommitmentKey,
     v: &[T],
     r: &E::Scalar,
+    binary: usize,
+    byte: usize,
   ) -> Self::Commitment {
     assert!(ck.ck.len() >= v.len());
 
-    Commitment {
-      comm: E::GE::vartime_multiscalar_mul_small(v, &ck.ck[..v.len()])
-        + <E::GE as DlogGroup>::group(&ck.h) * r,
+    let mut result = E::GE::vartime_multiscalar_mul_small(v, &ck.ck[..v.len()], binary, byte);
+
+    if r != &E::Scalar::ZERO {
+      result += <E::GE as DlogGroup>::group(&ck.h) * r;
     }
+
+    Commitment { comm: result }
   }
 
   fn derandomize(
