@@ -286,7 +286,10 @@ macro_rules! impl_traits {
         let byte_bases = &bases[binary..byte];
         let binary_result = msm_small(binary_scalars, binary_bases, 1);
         let byte_result = msm_small(byte_scalars, byte_bases, 8);
-        binary_result + byte_result
+        let rest_scalars = &scalars[byte..];
+        let rest_bases = &bases[byte..];
+        let rest_result = msm_small(rest_scalars, rest_bases, 64);
+        binary_result + byte_result + rest_result
       }
     }
   };
