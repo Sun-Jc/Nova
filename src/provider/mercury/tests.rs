@@ -23,11 +23,10 @@ fn make_fft_domain<Scalar: PrimeField>(log_n: u32) -> Vec<Scalar> {
   }
 
   {
-    for i in 1..length {
+    for e in domain.iter().take(length).skip(1) {
       let mut res = Scalar::ONE;
-      let e = domain[i];
       for _ in 0..length {
-        res = res * e;
+        res *= e;
       }
       assert_eq!(res, Scalar::ONE);
     }

@@ -9,7 +9,7 @@ use rayon::iter::{
 use crate::spartan::polys::univariate::UniPoly;
 
 pub(crate) fn omega<Scalar: PrimeField>(log_n: u32) -> Scalar {
-  Scalar::ROOT_OF_UNITY.pow(&[1_u64 << (Scalar::S - log_n)])
+  Scalar::ROOT_OF_UNITY.pow([1_u64 << (Scalar::S - log_n)])
 }
 
 #[derive(Clone)]
@@ -89,43 +89,40 @@ fn make_s_polynomial<Scalar: PrimeField>(
   let mut lhs_evals = vec![Scalar::ZERO; n2];
   let mut gamma_pow = Scalar::ONE;
 
-  a_polys
-    .into_iter()
-    .zip(b_polys.into_iter())
-    .for_each(|(a, b)| {
-      let mut a = a;
-      let mut b = b;
-      a.raise(n2);
-      b.raise(n2);
+  a_polys.into_iter().zip(b_polys).for_each(|(a, b)| {
+    let mut a = a;
+    let mut b = b;
+    a.raise(n2);
+    b.raise(n2);
 
-      let (a_evals, b_evals) = rayon::join(|| a.into_evaluations(), || b.into_evaluations());
+    let (a_evals, b_evals) = rayon::join(|| a.into_evaluations(), || b.into_evaluations());
 
-      let lhs0 = a_evals[0] * b_evals[0];
-      lhs_evals[0] += (lhs0 + lhs0) * gamma_pow;
+    let lhs0 = a_evals[0] * b_evals[0];
+    lhs_evals[0] += (lhs0 + lhs0) * gamma_pow;
 
-      lhs_evals[1..]
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, v)| {
-          let i = i + 1;
-          let tmp = a_evals[i] * b_evals[n2 - i] + a_evals[n2 - i] * b_evals[i];
-          *v += tmp * gamma_pow;
-        });
+    lhs_evals[1..]
+      .par_iter_mut()
+      .enumerate()
+      .for_each(|(i, v)| {
+        let i = i + 1;
+        let tmp = a_evals[i] * b_evals[n2 - i] + a_evals[n2 - i] * b_evals[i];
+        *v += tmp * gamma_pow;
+      });
 
-      gamma_pow *= gamma;
-    });
+    gamma_pow *= gamma;
+  });
 
   // x^{n-1}
-  let omega_n_1 = omega::<Scalar>(log_n + 1).pow(&[n as u64 - 1]);
+  let omega_n_1 = omega::<Scalar>(log_n + 1).pow([n as u64 - 1]);
   let mut x_pow = omega_n_1;
-  for i in 1..n2 {
-    lhs_evals[i] *= x_pow;
+  for v in lhs_evals.iter_mut().take(n2).skip(1) {
+    *v *= x_pow;
     x_pow *= omega_n_1;
   }
 
   let mut coeffs = UniPoly::from_evaluations(lhs_evals).coeffs;
 
-  assert!(coeffs.len() <= n2 - 1);
+  assert!(coeffs.len() < n2);
 
   coeffs.drain(..n);
 
@@ -135,9 +132,9 @@ fn make_s_polynomial<Scalar: PrimeField>(
 impl<Scalar: PrimeField> IPAWitness<Scalar> {
   pub fn generate(log_n: u32, input_polynomials: InputPolynomials<Scalar>, gamma: &Scalar) -> Self {
     assert_eq!(input_polynomials.lhs.len(), input_polynomials.rhs.len());
-    assert!(input_polynomials.lhs.len() > 0);
+    assert!(!input_polynomials.lhs.is_empty());
 
-    assert!(log_n + 1 <= Scalar::S);
+    assert!(log_n < Scalar::S);
 
     let compute_inner_product = |(a, b): (&UniPoly<Scalar>, &UniPoly<Scalar>)| {
       a.coeffs
