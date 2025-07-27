@@ -158,7 +158,7 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
     scalars
       .iter()
       .zip(bases.iter())
-      .filter(|(scalar, _)| (!scalar.is_zero()))
+      .filter(|(scalar, _)| !scalar.is_zero())
       .for_each(|(_, base)| {
         acc += *base;
       });

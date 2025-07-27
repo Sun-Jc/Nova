@@ -16,6 +16,8 @@ pub(crate) mod pedersen;
 pub(crate) mod ptau;
 pub(crate) mod traits;
 
+pub(crate) mod mercury;
+
 mod msm;
 
 use crate::{
