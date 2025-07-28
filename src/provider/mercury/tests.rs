@@ -1,17 +1,25 @@
 use ff::{Field, PrimeField};
+use halo2curves::bn256;
 use rand_core::OsRng;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-  provider::mercury::{
-    degree_check::d_polynomial,
-    ipa::{omega, IPAWitness, InputPolynomials},
-    split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
+  provider::{
+    hyperkzg::{CommitmentKey, VerifierKey},
+    mercury::{
+      degree_check::d_polynomial,
+      ipa::{omega, IPAWitness, InputPolynomials},
+      kzg::{BatchKZGWitness, PolyCommitment},
+      split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
+    },
+    traits::DlogGroup,
+    MercuryEngine,
   },
   spartan::polys::univariate::UniPoly,
 };
 
 type F = halo2curves::bn256::Fr;
+type E = MercuryEngine;
 
 fn make_fft_domain<Scalar: PrimeField>(log_n: u32) -> Vec<Scalar> {
   let length = 1 << log_n;
@@ -303,4 +311,57 @@ fn test_from_evals_with_xs() {
   let tenth = F::from(10).invert().unwrap();
 
   assert_eq!(poly.coeffs, vec![F::ONE, -tenth, tenth]);
+}
+
+#[test]
+fn test_foo() {
+  let log_n = 2;
+  let h_poly = make_random_poly::<F>(log_n);
+  let g_poly = make_random_poly::<F>(log_n);
+  let s_poly = make_random_poly::<F>(log_n);
+  let d_poly = make_random_poly::<F>(log_n);
+
+  let alpha = F::random(OsRng);
+  let zeta = F::random(OsRng);
+
+  let _witness =
+    super::kzg::BatchKZGWitness::init_eval(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
+}
+
+#[test]
+fn test_batch_kzg() {
+  let log_n = 2;
+  let g_poly = make_random_poly::<F>(log_n);
+  let h_poly = make_random_poly::<F>(log_n);
+  let s_poly = make_random_poly::<F>(log_n);
+  let d_poly = make_random_poly::<F>(log_n);
+
+  let ck = CommitmentKey::<E>::setup_from_rng(b"test", 1 << (log_n * 2), OsRng);
+  let vk = VerifierKey {
+    G: bn256::G1::gen().affine(),
+    H: bn256::G2::gen().affine(),
+    tau_H: ck.tau_H.clone(),
+  };
+
+  let com = PolyCommitment::commit_to(&ck, &g_poly, &h_poly, &s_poly, &d_poly);
+
+  let alpha = F::random(OsRng);
+  let zeta = F::random(OsRng);
+
+  let (witness, eval) =
+    BatchKZGWitness::init_eval(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
+
+  let mut witness = witness;
+
+  let beta = F::random(OsRng);
+
+  witness.open_phase_1(&beta);
+
+  let z = F::random(OsRng);
+
+  witness.open_phase_2(&z);
+
+  let proof = witness.finalize(&ck);
+
+  proof.verify(&vk, &com, &eval);
 }

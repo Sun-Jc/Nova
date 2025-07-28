@@ -73,6 +73,26 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
     UniPoly { coeffs }
   }
 
+  fn into_add_by_polynomial(self, rhs: &UniPoly<Scalar>) -> Self {
+    let mut res = self;
+    if rhs.coeffs.len() > res.coeffs.len() {
+      res.raise(rhs.coeffs.len());
+    }
+    let n = min(rhs.coeffs.len(), res.coeffs.len());
+    res
+      .coeffs
+      .par_iter_mut()
+      .take(n)
+      .zip(rhs.coeffs.par_iter().take(n))
+      .for_each(|(l, r)| {
+        *l += *r;
+      });
+
+    res.trim();
+
+    res
+  }
+
   fn into_sub_by_polynomial(self, rhs: &UniPoly<Scalar>) -> Self {
     let mut res = self;
     if rhs.coeffs.len() > res.coeffs.len() {
@@ -96,6 +116,13 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
   // Only linear or quadratic polynomials are supported
   // Adapted from `UniPoly::from_evals`
   fn from_evals_with_xs(xs: &[Scalar], evals: &[Scalar]) -> Self {
+    if evals.len() == 1 {
+      return Self {
+        coeffs: vec![evals[0]],
+      };
+    }
+
+    assert_eq!(xs.len(), evals.len());
     let n = evals.len();
 
     let mut matrix: Vec<Vec<Scalar>> = Vec::with_capacity(n);
@@ -113,5 +140,22 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
 
     let coeffs = gaussian_elimination(&mut matrix);
     Self { coeffs }
+  }
+
+  // prod{ (x - alpha_i) }
+  fn make_vanishing_poly(alphas: &[Scalar]) -> Self {
+    let mut res = Self {
+      coeffs: vec![-alphas[0], Scalar::ONE],
+    };
+
+    for alpha in alphas.iter().skip(1) {
+      res = res.mul_by_deg_one_polynomial(&-*alpha);
+    }
+
+    res
+  }
+
+  fn scale(&mut self, s: &Scalar) {
+    self.coeffs.par_iter_mut().for_each(|c| *c *= *s);
   }
 }

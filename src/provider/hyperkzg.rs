@@ -48,7 +48,7 @@ where
 {
   ck: Vec<<E::GE as DlogGroup>::AffineGroupElement>,
   h: <E::GE as DlogGroup>::AffineGroupElement,
-  tau_H: <<E::GE as PairingGroup>::G2 as DlogGroup>::AffineGroupElement, // needed only for the verifier key
+  pub(crate) tau_H: <<E::GE as PairingGroup>::G2 as DlogGroup>::AffineGroupElement, // needed only for the verifier key
 }
 
 impl<E: Engine> CommitmentKey<E>
@@ -570,9 +570,9 @@ pub struct VerifierKey<E: Engine>
 where
   E::GE: PairingGroup,
 {
-  G: G1Affine<E>,
-  H: G2Affine<E>,
-  tau_H: G2Affine<E>,
+  pub(crate) G: G1Affine<E>,
+  pub(crate) H: G2Affine<E>,
+  pub(crate) tau_H: G2Affine<E>,
 }
 
 /// Provides an implementation of a polynomial evaluation argument
