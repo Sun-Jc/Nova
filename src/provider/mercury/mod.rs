@@ -4,6 +4,7 @@ use crate::spartan::polys::univariate::UniPoly;
 
 mod ipa;
 mod kzg;
+mod split_polynomial;
 
 #[cfg(test)]
 mod tests;

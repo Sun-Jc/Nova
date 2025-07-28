@@ -5,7 +5,8 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 use crate::{
   provider::mercury::{
     ipa::{omega, IPAWitness, InputPolynomials},
-    kzg::compute_quotient,
+    kzg::div_polynomial_by_deg_one,
+    split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
   },
   spartan::polys::univariate::UniPoly,
 };
@@ -158,7 +159,23 @@ fn test_mercury_ipa_constant() {
 }
 
 #[test]
-fn test_div() {
+fn test_div_deg_one() {
+  // (x - 5) * (x - 2) + 3
+  // = x^2 - 7x + 13
+  let poly = UniPoly {
+    coeffs: vec![F::from(13), -F::from(7), F::from(1)],
+  };
+
+  let alpha = F::from(5);
+
+  let (quotient, remainder) = div_polynomial_by_deg_one(&poly, &alpha);
+
+  assert_eq!(quotient.coeffs, vec![-F::from(2), F::from(1)]);
+  assert_eq!(remainder, F::from(3));
+}
+
+#[test]
+fn test_div_deg_one_zero_remainder() {
   // (x - 5) * (x - 2)
   // = x^2 - 7x + 10
   let poly = UniPoly {
@@ -167,7 +184,53 @@ fn test_div() {
 
   let alpha = F::from(5);
 
-  let quotient = compute_quotient(&poly, &alpha);
+  let (quotient, remainder) = div_polynomial_by_deg_one(&poly, &alpha);
 
   assert_eq!(quotient.coeffs, vec![-F::from(2), F::from(1)]);
+  assert_eq!(remainder, F::from(0));
+}
+
+#[test]
+fn test_split_polynomial() {
+  let log_n = 22;
+  let poly = make_random_poly::<F>(log_n);
+
+  let split_res = split_polynomial(&poly, log_n);
+
+  let b = 1 << (log_n / 2);
+
+  assert_eq!(split_res.len(), b);
+
+  // f(x) = sum_i { x^i f_i(x^b) }
+  let r = F::random(OsRng);
+  let lhs = poly.evaluate(&r);
+  let r_b = r.pow([b as u64]);
+  let rhs = split_res
+    .iter()
+    .enumerate()
+    .map(|(i, p)| r.pow([i as u64]) * p.evaluate(&r_b))
+    .sum::<F>();
+
+  assert_eq!(lhs, rhs);
+}
+
+#[test]
+fn test_div_x_b_alpha() {
+  // f(X) = (X^b − α) * q(X) + g(X).
+  let log_n = 10;
+  let poly = make_random_poly::<F>(log_n);
+
+  let alpha = F::random(OsRng);
+
+  let (quotient, remainder) = divide_polynomial_by_x_b_alpha(&poly, log_n, &alpha);
+
+  let r = F::random(OsRng);
+
+  let lhs = poly.evaluate(&r);
+
+  let b = 1 << (log_n / 2);
+  let r_b = r.pow([b as u64]);
+  let rhs = (r_b - alpha) * quotient.evaluate(&r) + remainder.evaluate(&r);
+
+  assert_eq!(lhs, rhs);
 }
