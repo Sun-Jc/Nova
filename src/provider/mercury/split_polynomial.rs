@@ -3,9 +3,7 @@
 use ff::PrimeField;
 use rayon::prelude::*;
 
-use crate::{
-  provider::mercury::kzg::div_polynomial_by_deg_one, spartan::polys::univariate::UniPoly,
-};
+use crate::spartan::polys::univariate::UniPoly;
 
 /// Split a univariate polynomial into column polynomials by viewing coefficients as a 2D matrix
 pub fn split_polynomial<Scalar: PrimeField>(
@@ -51,9 +49,9 @@ pub fn divide_polynomial_by_x_b_alpha<Scalar: PrimeField>(
   let split_res = split_polynomial(polynomial, log_n);
 
   let (quotients, remainder_coefficients): (Vec<Vec<Scalar>>, Vec<Scalar>) = split_res
-    .par_iter()
+    .into_par_iter()
     .map(|p| {
-      let (mut quotient, remainder) = div_polynomial_by_deg_one(p, alpha);
+      let (mut quotient, remainder) = p.into_div_by_deg_one_polynomial(alpha);
       quotient.raise(b);
       (quotient.coeffs, remainder)
     })

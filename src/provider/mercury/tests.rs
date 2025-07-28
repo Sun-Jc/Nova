@@ -4,8 +4,8 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 
 use crate::{
   provider::mercury::{
+    degree_check::d_polynomial,
     ipa::{omega, IPAWitness, InputPolynomials},
-    kzg::div_polynomial_by_deg_one,
     split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
   },
   spartan::polys::univariate::UniPoly,
@@ -168,7 +168,7 @@ fn test_div_deg_one() {
 
   let alpha = F::from(5);
 
-  let (quotient, remainder) = div_polynomial_by_deg_one(&poly, &alpha);
+  let (quotient, remainder) = poly.into_div_by_deg_one_polynomial(&alpha);
 
   assert_eq!(quotient.coeffs, vec![-F::from(2), F::from(1)]);
   assert_eq!(remainder, F::from(3));
@@ -184,7 +184,7 @@ fn test_div_deg_one_zero_remainder() {
 
   let alpha = F::from(5);
 
-  let (quotient, remainder) = div_polynomial_by_deg_one(&poly, &alpha);
+  let (quotient, remainder) = poly.into_div_by_deg_one_polynomial(&alpha);
 
   assert_eq!(quotient.coeffs, vec![-F::from(2), F::from(1)]);
   assert_eq!(remainder, F::from(0));
@@ -233,4 +233,74 @@ fn test_div_x_b_alpha() {
   let rhs = (r_b - alpha) * quotient.evaluate(&r) + remainder.evaluate(&r);
 
   assert_eq!(lhs, rhs);
+}
+
+#[test]
+fn test_degree_check() {
+  let log_n = 2;
+  let poly = make_random_poly::<F>(log_n);
+
+  // d(x) = X^{1<<log_n - 1} * f(1/X)
+  let d_poly = d_polynomial(&poly, log_n);
+
+  let r = F::random(OsRng);
+
+  let r_pow = r.pow([((1 << log_n) - 1) as u64]);
+  let r_inv = r.invert().unwrap();
+
+  let lhs = d_poly.evaluate(&r);
+  let rhs = r_pow * poly.evaluate(&r_inv);
+
+  assert_eq!(lhs, rhs);
+}
+
+#[test]
+fn test_mul_by_deg_one_polynomial() {
+  // (x + 1)(x + 2) * (x - 2)(x - 3)
+  // = (x^2 + 3x + 2) * ..
+  let poly = make_poly(&[2, 3, 1]);
+
+  let zeta = &-F::from(2);
+
+  let res = poly.mul_by_deg_one_polynomial(zeta);
+
+  let zeta = &-F::from(3);
+  let res = res.mul_by_deg_one_polynomial(zeta);
+
+  assert_eq!(
+    res.coeffs,
+    vec![
+      F::from(12),
+      F::from(8),
+      -F::from(7),
+      -F::from(2),
+      F::from(1)
+    ]
+  );
+}
+
+#[test]
+fn test_sub_by_deg_one_polynomial() {
+  // (x + 1)(x + 2) - (x + 2)
+  // = (x^2 + 3x + 2) - (x + 2)
+  // = x^2 + 2x
+  let poly = make_poly::<F>(&[2, 3, 1]);
+
+  let lhs = make_poly(&[2, 1]);
+
+  let res = poly.into_sub_by_polynomial(&lhs);
+
+  assert_eq!(res.coeffs, vec![F::ZERO, F::from(2), F::from(1)]);
+}
+
+#[test]
+fn test_from_evals_with_xs() {
+  let xs = vec![F::from(0), F::from(1), F::from(5)];
+  let evals = vec![F::from(1), F::from(1), F::from(3)];
+
+  let poly = UniPoly::from_evals_with_xs(&xs, &evals);
+
+  let tenth = F::from(10).invert().unwrap();
+
+  assert_eq!(poly.coeffs, vec![F::ONE, -tenth, tenth]);
 }
