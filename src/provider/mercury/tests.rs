@@ -9,7 +9,7 @@ use crate::{
     mercury::{
       degree_check::d_polynomial,
       ipa::{omega, IPAWitness, InputPolynomials},
-      kzg::{BatchKZGWitness, PolyCommitment},
+      kzg::EvaluationEngine,
       split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
     },
     traits::DlogGroup,
@@ -314,27 +314,16 @@ fn test_from_evals_with_xs() {
 }
 
 #[test]
-fn test_foo() {
-  let log_n = 2;
-  let h_poly = make_random_poly::<F>(log_n);
+fn test_batch_kzg() {
+  let log_n = 4;
+
   let g_poly = make_random_poly::<F>(log_n);
+  let h_poly = make_random_poly::<F>(log_n);
   let s_poly = make_random_poly::<F>(log_n);
   let d_poly = make_random_poly::<F>(log_n);
 
   let alpha = F::random(OsRng);
   let zeta = F::random(OsRng);
-
-  let _witness =
-    super::kzg::BatchKZGWitness::init_eval(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
-}
-
-#[test]
-fn test_batch_kzg() {
-  let log_n = 2;
-  let g_poly = make_random_poly::<F>(log_n);
-  let h_poly = make_random_poly::<F>(log_n);
-  let s_poly = make_random_poly::<F>(log_n);
-  let d_poly = make_random_poly::<F>(log_n);
 
   let ck = CommitmentKey::<E>::setup_from_rng(b"test", 1 << (log_n * 2), OsRng);
   let vk = VerifierKey {
@@ -343,25 +332,47 @@ fn test_batch_kzg() {
     tau_H: ck.tau_H.clone(),
   };
 
-  let com = PolyCommitment::commit_to(&ck, &g_poly, &h_poly, &s_poly, &d_poly);
+  {
+    use crate::provider::traits::PairingGroup;
 
-  let alpha = F::random(OsRng);
-  let zeta = F::random(OsRng);
+    assert_eq!(ck.ck[0], vk.G);
+    let tau = ck.ck[1];
+    let p1 = bn256::G1::pairing(&tau.into(), &DlogGroup::group(&vk.H));
+    let p2 = bn256::G1::pairing(&DlogGroup::group(&vk.G), &DlogGroup::group(&vk.tau_H));
+
+    assert_eq!(p1, p2);
+  }
+
+  // let vk = VerifierKey {
+  //   G: E::GE::gen().affine(),
+  //   H: <<E::GE as PairingGroup>::G2 as DlogGroup>::gen().affine(),
+  //   tau_H: ck.tau_H,
+  // };
 
   let (witness, eval) =
-    BatchKZGWitness::init_eval(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
+    EvaluationEngine::init_eval_0(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
 
   let mut witness = witness;
 
+  witness.commit_1(&ck);
+  // let beta = witness.sample_beta_2();
   let beta = F::random(OsRng);
 
-  witness.open_phase_1(&beta);
+  witness.open_phase_3(&beta);
 
+  witness.commit_quot_m_4(&ck);
+  // let z = witness.sample_z_5();
   let z = F::random(OsRng);
 
-  witness.open_phase_2(&z);
+  witness.open_phase_6(&z);
 
-  let proof = witness.finalize(&ck);
+  witness.commit_quot_l_7(&ck);
 
-  proof.verify(&vk, &com, &eval);
+  witness.check_7(&ck, &vk);
+
+  let proof = witness.into_proof_8();
+
+  let (pl, pr) = proof.verify(&vk, &eval);
+
+  assert_eq!(pl, pr);
 }

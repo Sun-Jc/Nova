@@ -46,7 +46,7 @@ pub struct CommitmentKey<E: Engine>
 where
   E::GE: PairingGroup,
 {
-  ck: Vec<<E::GE as DlogGroup>::AffineGroupElement>,
+  pub(crate) ck: Vec<<E::GE as DlogGroup>::AffineGroupElement>,
   h: <E::GE as DlogGroup>::AffineGroupElement,
   pub(crate) tau_H: <<E::GE as PairingGroup>::G2 as DlogGroup>::AffineGroupElement, // needed only for the verifier key
 }
@@ -281,7 +281,9 @@ where
 
     let num_gens = n.next_power_of_two();
 
-    let tau = E::Scalar::random(rng);
+    let tau = E::Scalar::ONE; // E::Scalar::random(rng);
+
+    dbg!(&tau);
 
     let powers_of_tau = if num_gens < T1 {
       Self::compute_powers_serial(tau, num_gens)
