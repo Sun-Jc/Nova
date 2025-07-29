@@ -4,7 +4,6 @@
 use std::fmt::Debug;
 
 use ff::{Field, PrimeField};
-use rand_core::OsRng;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use crate::{
@@ -88,17 +87,9 @@ where
   pub s_minus_s_star: UniPoly<E::Scalar>,
   pub d_minus_d_star: UniPoly<E::Scalar>,
 
-  //   pub z_poly_t_s1: UniPoly<E::Scalar>,
-  //   pub z_poly_t_s2: UniPoly<E::Scalar>,
-  //   pub z_poly_t_s3: UniPoly<E::Scalar>,
-  //   pub z_poly_t_s4: UniPoly<E::Scalar>,
-  pub m_poly: UniPoly<E::Scalar>,
   pub quot_m_poly: UniPoly<E::Scalar>,
   pub comm_qm: Commitment<E>,
 
-  pub mz_poly: UniPoly<E::Scalar>,
-
-  pub l_poly: UniPoly<E::Scalar>,
   pub quot_l_poly: UniPoly<E::Scalar>,
   pub comm_ql: Commitment<E>,
 }
@@ -198,57 +189,6 @@ where
         .unwrap()
     };
 
-    // let z_poly_t_s1 = UniPoly::make_vanishing_poly(&[*alpha]);
-    // let z_poly_t_s2 = UniPoly::make_vanishing_poly(&[E::Scalar::ONE]);
-    // let z_poly_t_s3 = UniPoly::make_vanishing_poly(&[*alpha]);
-    // let z_poly_t_s4 = UniPoly::make_vanishing_poly(&[*zeta_inv, *alpha]);
-
-    {
-      // Check Interpolation
-      let polys = vec![
-        g_poly, g_poly, h_poly, h_poly, h_poly, s_poly, s_poly, d_poly,
-      ];
-
-      let xs = xss.iter().flatten().collect::<Vec<_>>();
-
-      let evals1 = polys
-        .into_par_iter()
-        .zip(xs.clone())
-        .map(|(poly, x)| poly.evaluate(x))
-        .collect::<Vec<_>>();
-
-      let polys = vec![
-        &g_star, &g_star, &h_star, &h_star, &h_star, &s_star, &s_star, &d_star,
-      ];
-
-      let evals2 = polys
-        .into_par_iter()
-        .zip(xs)
-        .map(|(poly, x)| poly.evaluate(x))
-        .collect::<Vec<_>>();
-
-      assert_eq!(evals1, evals2);
-
-      let polys = vec![
-        &g_minus_g_star,
-        &g_minus_g_star,
-        &h_minus_h_star,
-        &h_minus_h_star,
-        &s_minus_s_star,
-        &s_minus_s_star,
-        &d_minus_d_star,
-      ];
-
-      let evals3 = polys
-        .into_par_iter()
-        .map(|poly| poly.evaluate(zeta))
-        .collect::<Vec<_>>();
-
-      for e in evals3 {
-        assert_eq!(e, E::Scalar::ZERO);
-      }
-    }
-
     let witness = Self {
       zeta: *zeta,
       zeta_inv: *zeta_inv,
@@ -269,10 +209,6 @@ where
       s_minus_s_star,
       d_minus_d_star,
 
-      //   z_poly_t_s1,
-      //   z_poly_t_s2,
-      //   z_poly_t_s3,
-      //   z_poly_t_s4,
       comm_g: Default::default(),
       comm_h: Default::default(),
       comm_s: Default::default(),
@@ -282,10 +218,7 @@ where
 
       z: Default::default(),
       beta: Default::default(),
-      m_poly: empty_poly(),
       quot_m_poly: empty_poly(),
-      mz_poly: empty_poly(),
-      l_poly: empty_poly(),
       quot_l_poly: empty_poly(),
     };
 
@@ -307,14 +240,18 @@ where
 
   pub fn commit_1(&mut self, ck: &CommitmentKey<E>) {
     let vs = vec![
-      self.g_poly.coeffs.clone(),
-      self.h_poly.coeffs.clone(),
-      self.s_poly.coeffs.clone(),
-      self.d_poly.coeffs.clone(),
+      &self.g_poly.coeffs,
+      &self.h_poly.coeffs,
+      &self.s_poly.coeffs,
+      &self.d_poly.coeffs,
     ];
 
-    let comms = E::CE::batch_commit(ck, &vs, &[E::Scalar::ZERO; 4]);
-    let [comm_g, comm_h, comm_s, comm_d] = comms.try_into().unwrap();
+    let [comm_g, comm_h, comm_s, comm_d] = vs
+      .into_par_iter()
+      .map(|v| E::CE::commit(ck, v, &E::Scalar::ZERO))
+      .collect::<Vec<_>>()
+      .try_into()
+      .unwrap();
 
     self.comm_g = comm_g;
     self.comm_h = comm_h;
@@ -358,19 +295,9 @@ where
         .zip(rhs)
         .map(|(poly, rhs)| {
           let mut poly = poly.clone();
-          rhs.into_iter().for_each(|c| {
-            let x = poly.mul_by_deg_one_polynomial(&c);
-
-            {
-              let r = E::Scalar::random(OsRng);
-              let eval1 = poly.evaluate(&r) * (r + c);
-              let eval2 = x.evaluate(&r);
-
-              assert_eq!(eval1, eval2);
-            }
-
-            poly = x;
-          });
+          rhs
+            .into_iter()
+            .for_each(|c| poly = poly.mul_by_deg_one_polynomial(&c));
 
           poly
         })
@@ -392,22 +319,8 @@ where
         .into_add_by_polynomial(&s_prod)
         .into_add_by_polynomial(&d_prod);
 
-      {
-        let r = E::Scalar::random(OsRng);
-        let v1 = g_prod.evaluate(&r);
-        let v2 = h_prod.evaluate(&r);
-        let v3 = s_prod.evaluate(&r);
-        let v4 = d_prod.evaluate(&r);
-
-        let v = m_poly.evaluate(&r);
-
-        assert_eq!(v, v1 + v2 + v3 + v4);
-      }
-
       m_poly
     };
-
-    self.m_poly = m_poly.clone();
 
     let q_m_poly = {
       // Compute Quotient Polynomial
@@ -493,83 +406,11 @@ where
         .unwrap()
     };
 
-    {
-      let mut res = E::Scalar::ZERO;
-
-      let eval1 = self.g_minus_g_star.evaluate(z) * (*z - self.alpha);
-      let eval2 = g_poly_z.evaluate(z);
-
-      res += eval1;
-
-      assert_eq!(eval1, eval2);
-
-      let eval1 = self.h_minus_h_star.evaluate(z) * self.beta;
-      let eval2 = h_poly_z.evaluate(z);
-
-      res += eval1;
-
-      assert_eq!(eval1, eval2);
-
-      let eval1 = self.s_minus_s_star.evaluate(z) * beta_2 * (*z - self.alpha);
-      let eval2 = s_poly_z.evaluate(z);
-
-      res += eval1;
-
-      assert_eq!(eval1, eval2);
-
-      let eval1 =
-        self.d_minus_d_star.evaluate(z) * beta_3 * (*z - self.alpha) * (*z - self.zeta_inv);
-      let eval2 = d_poly_z.evaluate(z);
-
-      res += eval1;
-
-      assert_eq!(eval1, eval2);
-
-      let mz_poly = g_poly_z
-        .clone()
-        .into_add_by_polynomial(&h_poly_z)
-        .into_add_by_polynomial(&s_poly_z)
-        .into_add_by_polynomial(&d_poly_z);
-
-      let eval1 = mz_poly.evaluate(&z);
-      let eval2 = self.m_poly.evaluate(&z);
-
-      assert_eq!(eval1, res);
-
-      assert_eq!(res, eval2);
-    }
-
     // TODO: can be parallelized
     let mz_poly = g_poly_z
       .into_add_by_polynomial(&h_poly_z)
       .into_add_by_polynomial(&s_poly_z)
       .into_add_by_polynomial(&d_poly_z);
-
-    self.mz_poly = mz_poly.clone();
-
-    {
-      let eval1 = mz_poly.evaluate(&z);
-      let eval2 = self.m_poly.evaluate(&z);
-
-      assert_eq!(eval1, eval2);
-    }
-
-    {
-      let r = E::Scalar::random(OsRng);
-
-      let lhs = mz_poly.evaluate(&r);
-
-      let rhs1 = (*z - self.alpha) * (self.g_poly.evaluate(&r) - self.g_star.evaluate(&z));
-      let rhs2 = self.h_poly.evaluate(&r) - self.h_star.evaluate(&z);
-      let rhs3 = (*z - self.alpha) * (self.s_poly.evaluate(&r) - self.s_star.evaluate(&z));
-      let rhs4 = (*z - self.alpha)
-        * (*z - self.zeta_inv)
-        * (self.d_poly.evaluate(&r) - self.d_star.evaluate(&z));
-
-      let rhs = rhs1 + rhs2 * self.beta + rhs3 * beta_2 + rhs4 * beta_3;
-
-      assert_eq!(lhs, rhs);
-    }
 
     let l_poly = {
       let mut q_m = self.quot_m_poly.clone();
@@ -577,22 +418,6 @@ where
 
       mz_poly.clone().into_sub_by_polynomial(&q_m)
     };
-
-    self.l_poly = l_poly.clone();
-
-    {
-      let r = E::Scalar::random(OsRng);
-      assert_eq!(
-        l_poly.evaluate(&r),
-        mz_poly.evaluate(&r) - self.quot_m_poly.evaluate(&r) * t_eval_at_z
-      );
-
-      assert_eq!(l_poly.evaluate(&z), E::Scalar::ZERO);
-      assert_eq!(
-        mz_poly.evaluate(&z) - self.quot_m_poly.evaluate(&z) * t_eval_at_z,
-        E::Scalar::ZERO
-      );
-    }
 
     let (quot_l_poly, rem) = l_poly.into_div_by_deg_one_polynomial(z);
     assert_eq!(rem, E::Scalar::ZERO);
@@ -605,48 +430,7 @@ where
     self.comm_ql = comm_quot_l;
   }
 
-  pub fn check_7(&mut self, ck: &CommitmentKey<E>, vk: &VerifierKey<E>) {
-    {
-      let r = E::Scalar::random(OsRng);
-      let ql_eval = self.quot_l_poly.evaluate(&r);
-      let l_eval = if self.l_poly.coeffs.len() == 1 {
-        self.l_poly.coeffs[0]
-      } else {
-        self.l_poly.evaluate(&r)
-      };
-
-      assert_eq!(ql_eval * (r - self.z), l_eval);
-    }
-
-    {
-      let comm_l = E::CE::commit(ck, &self.l_poly.coeffs, &E::Scalar::ZERO);
-      let z = self.z;
-      let comm_ql = self.comm_ql;
-      let ll = comm_l + comm_ql * z;
-      let lr = DlogGroup::group(&vk.H);
-      let rl = comm_ql;
-      let rr = DlogGroup::group(&vk.tau_H);
-
-      let pairing_l = E::GE::pairing(&ll.into_inner(), &lr);
-      let pairing_r = E::GE::pairing(&rl.into_inner(), &rr);
-
-      assert!(pairing_l == pairing_r);
-
-      // q_m(tau) * (tau-z) = m(tau)
-      // c_qm * (tau - z_0) (tau - z_1)...  == c_m
-      // c_l + z * c_ql == c_ql * tau
-    }
-  }
-
   pub fn into_proof_8(self) -> BatchKZGProof<E> {
-    {
-      assert_ne!(self.comm_g, Default::default());
-      assert_ne!(self.comm_h, Default::default());
-      assert_ne!(self.comm_s, Default::default());
-      assert_ne!(self.comm_d, Default::default());
-      assert_ne!(self.comm_qm, Default::default());
-      assert_ne!(self.comm_ql, Default::default());
-    }
     BatchKZGProof {
       comm_g: self.comm_g,
       comm_h: self.comm_h,
@@ -667,11 +451,7 @@ where
   E::GE: PairingGroup,
   <E::GE as PairingGroup>::GT: Debug,
 {
-  pub fn verify(
-    &self,
-    vk: &VerifierKey<E>,
-    eval: &BatchEvaluation<E::Scalar>,
-  ) -> (<E::GE as PairingGroup>::GT, <E::GE as PairingGroup>::GT) {
+  pub fn verify(&self, vk: &VerifierKey<E>, eval: &BatchEvaluation<E::Scalar>) {
     let zeta = eval.zeta;
     let zeta_inv = zeta.invert().unwrap();
     let alpha = eval.alpha;
@@ -748,9 +528,6 @@ where
     let pairing_l = E::GE::pairing(&ll, &lr);
     let pairing_r = E::GE::pairing(&rl, &rr);
 
-    assert_eq!(ll, rl);
-
-    // assert_eq!(pairing_l, pairing_r);
-    (pairing_l, pairing_r)
+    assert_eq!(pairing_l, pairing_r);
   }
 }

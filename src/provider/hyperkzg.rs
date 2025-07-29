@@ -281,9 +281,7 @@ where
 
     let num_gens = n.next_power_of_two();
 
-    let tau = E::Scalar::ONE; // E::Scalar::random(rng);
-
-    dbg!(&tau);
+    let tau = E::Scalar::random(rng);
 
     let powers_of_tau = if num_gens < T1 {
       Self::compute_powers_serial(tau, num_gens)

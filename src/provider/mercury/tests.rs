@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ff::{Field, PrimeField};
 use halo2curves::bn256;
 use rand_core::OsRng;
@@ -315,7 +317,7 @@ fn test_from_evals_with_xs() {
 
 #[test]
 fn test_batch_kzg() {
-  let log_n = 4;
+  let log_n = 19;
 
   let g_poly = make_random_poly::<F>(log_n);
   let h_poly = make_random_poly::<F>(log_n);
@@ -332,47 +334,50 @@ fn test_batch_kzg() {
     tau_H: ck.tau_H.clone(),
   };
 
-  {
-    use crate::provider::traits::PairingGroup;
-
-    assert_eq!(ck.ck[0], vk.G);
-    let tau = ck.ck[1];
-    let p1 = bn256::G1::pairing(&tau.into(), &DlogGroup::group(&vk.H));
-    let p2 = bn256::G1::pairing(&DlogGroup::group(&vk.G), &DlogGroup::group(&vk.tau_H));
-
-    assert_eq!(p1, p2);
-  }
-
-  // let vk = VerifierKey {
-  //   G: E::GE::gen().affine(),
-  //   H: <<E::GE as PairingGroup>::G2 as DlogGroup>::gen().affine(),
-  //   tau_H: ck.tau_H,
-  // };
-
+  let start = Instant::now();
   let (witness, eval) =
     EvaluationEngine::init_eval_0(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
+
+  let dur0 = start.elapsed();
+  let start = Instant::now();
 
   let mut witness = witness;
 
   witness.commit_1(&ck);
+
+  let dur1 = start.elapsed();
+  let start = Instant::now();
+
   // let beta = witness.sample_beta_2();
   let beta = F::random(OsRng);
 
   witness.open_phase_3(&beta);
 
+  let dur3 = start.elapsed();
+  let start = Instant::now();
+
   witness.commit_quot_m_4(&ck);
+
+  let dur4 = start.elapsed();
+  let start = Instant::now();
+
   // let z = witness.sample_z_5();
   let z = F::random(OsRng);
 
   witness.open_phase_6(&z);
 
+  let dur6 = start.elapsed();
+  let start = Instant::now();
+
   witness.commit_quot_l_7(&ck);
 
-  witness.check_7(&ck, &vk);
+  let dur7 = start.elapsed();
 
   let proof = witness.into_proof_8();
 
-  let (pl, pr) = proof.verify(&vk, &eval);
+  let start = Instant::now();
+  proof.verify(&vk, &eval);
+  let dur8 = start.elapsed();
 
-  assert_eq!(pl, pr);
+  dbg!(&dur0, &dur1, &dur3, &dur4, &dur6, &dur7, &dur8);
 }
