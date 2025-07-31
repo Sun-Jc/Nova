@@ -204,7 +204,7 @@ fn main() {
   println!("=========================================================");
 
   let num_steps = 32;
-  for num_ops_per_step in [1024, 2048, 4096, 8192, 16384, 32768, 65536] {
+  for num_ops_per_step in [65536] {
     // number of instances of AND per Nova's recursive step
     let circuit = AndCircuit::new(num_ops_per_step);
 
