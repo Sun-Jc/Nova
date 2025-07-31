@@ -14,13 +14,15 @@ mod ipa;
 mod kzg;
 mod split_polynomial;
 
+mod engine;
+
 #[cfg(test)]
 mod tests;
 
 impl<Scalar: PrimeField> UniPoly<Scalar> {
   /// Remove (trailing) zero coefficients of high degree monomials
   fn trim(&mut self) {
-    while self.coeffs.last().unwrap() == &Scalar::ZERO {
+    while !self.coeffs.is_empty() && self.coeffs.last().unwrap() == &Scalar::ZERO {
       self.coeffs.pop();
     }
   }

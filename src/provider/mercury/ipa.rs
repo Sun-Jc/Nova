@@ -56,13 +56,16 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
   }
 }
 
-fn make_s_polynomial<Scalar: PrimeField>(
+pub fn make_s_polynomial<Scalar: PrimeField>(
   a_polys: Vec<UniPoly<Scalar>>,
   b_polys: Vec<UniPoly<Scalar>>,
   log_n: u32,
   gamma: &Scalar,
 ) -> UniPoly<Scalar> {
   assert!(log_n >= 1);
+
+  assert!(log_n >= a_polys[0].log_n());
+  assert!(log_n >= b_polys[0].log_n());
 
   let mut a_polys = a_polys;
   let mut b_polys = b_polys;

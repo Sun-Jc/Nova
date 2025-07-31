@@ -5,23 +5,31 @@ use halo2curves::bn256;
 use rand_core::OsRng;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
+use crate::provider::keccak::Keccak256Transcript;
+use crate::spartan::polys::eq::EqPolynomial;
+use crate::spartan::polys::multilinear::MultilinearPolynomial;
+use crate::traits::commitment::CommitmentEngineTrait;
+use crate::traits::evaluation::EvaluationEngineTrait;
+use crate::traits::TranscriptEngineTrait;
 use crate::{
   provider::{
     hyperkzg::{CommitmentKey, VerifierKey},
     mercury::{
+      self,
       degree_check::d_polynomial,
       ipa::{omega, IPAWitness, InputPolynomials},
-      kzg::EvaluationEngine,
+      kzg::EvaluationProcess,
       split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
     },
     traits::DlogGroup,
-    MercuryEngine,
+    Bn256EngineKZG,
   },
   spartan::polys::univariate::UniPoly,
 };
 
 type F = halo2curves::bn256::Fr;
-type E = MercuryEngine;
+type E = Bn256EngineKZG;
+type EE = mercury::engine::EvaluationEngine<E>;
 
 fn make_fft_domain<Scalar: PrimeField>(log_n: u32) -> Vec<Scalar> {
   let length = 1 << log_n;
@@ -247,7 +255,7 @@ fn test_div_x_b_alpha() {
 
 #[test]
 fn test_degree_check() {
-  let log_n = 2;
+  let log_n = 12;
   let poly = make_random_poly::<F>(log_n);
 
   // d(x) = X^{1<<log_n - 1} * f(1/X)
@@ -317,7 +325,7 @@ fn test_from_evals_with_xs() {
 
 #[test]
 fn test_batch_kzg() {
-  let log_n = 19;
+  let log_n = 12;
 
   let g_poly = make_random_poly::<F>(log_n);
   let h_poly = make_random_poly::<F>(log_n);
@@ -336,7 +344,7 @@ fn test_batch_kzg() {
 
   let start = Instant::now();
   let (witness, eval) =
-    EvaluationEngine::init_eval_0(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
+    EvaluationProcess::init_eval_0(&alpha, &zeta, &g_poly, &h_poly, &s_poly, &d_poly);
 
   let dur0 = start.elapsed();
   let start = Instant::now();
@@ -380,4 +388,84 @@ fn test_batch_kzg() {
   let dur8 = start.elapsed();
 
   dbg!(&dur0, &dur1, &dur3, &dur4, &dur6, &dur7, &dur8);
+}
+
+#[test]
+fn test_mercury_ee() {
+  {
+    let vs = vec![F::ONE, F::ONE];
+    // let log_n = 2;
+    let (p_poly, eq_evals) = mercury::engine::make_pu_poly(&vs);
+
+    dbg!(&p_poly.coeffs);
+    // dbg!(&p_poly.evaluate(&F::from(1)));
+    // dbg!(&p_poly.evaluate(&F::from(2)));
+    // dbg!(&p_poly.evaluate(&F::from(3)));
+  }
+
+  let log_n = 4;
+  // let poly = make_random_poly::<F>(log_n);
+  // let poly = make_poly(&[[1, 1, 5, 5], [2; 4], [3; 4], [4; 4]].concat());
+  let poly = make_poly(&[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+  // let poly2 = poly.clone();
+
+  // // transpose poly
+  // let n = poly.coeffs.len().isqrt();
+  // for i in 0..n {
+  //   for j in 0..n {
+  //     poly.coeffs[i * n + j] = poly2.coeffs[j * n + i];
+  //   }
+  // }
+
+  // let log_n = 2;
+  // let poly = make_poly(&[0, 1, 2, 3]);
+
+  let ck = CommitmentKey::<E>::setup_from_rng(b"test", 1 << (log_n + 1), OsRng);
+
+  // let point = (0..log_n).map(|_| F::random(OsRng)).collect::<Vec<_>>();
+
+  // let point = vec![F::from(4), F::from(2), F::from(3), F::from(0)];
+  let mut point = vec![F::from(0), F::from(0), F::from(0), F::from(1)];
+  // point.reverse();
+
+  let (pk, vk) = EE::setup(&ck);
+
+  let mut e_point = point.clone();
+  e_point.reverse();
+
+  let eval = MultilinearPolynomial::new(poly.coeffs.clone()).evaluate(&e_point);
+
+  println!("eval: {:?}", eval);
+
+  {
+    // check eval
+    let eq = EqPolynomial::new(point.clone());
+    let eval2 = eq
+      .evals()
+      .iter()
+      .zip(poly.coeffs.iter())
+      .map(|(a, b)| *a * *b)
+      .sum::<F>();
+
+    // assert_eq!(eval, eval2);
+  }
+
+  // assert_eq!(eval, F::from(1));
+
+  let mut transcript = Keccak256Transcript::<E>::new(b"test");
+
+  let comm = crate::provider::hyperkzg::CommitmentEngine::commit(&ck, &poly.coeffs, &F::ZERO);
+
+  let arg = EE::prove(
+    &ck,
+    &pk,
+    &mut transcript,
+    &comm,
+    &poly.coeffs,
+    &point,
+    &eval,
+  )
+  .unwrap();
+
+  EE::verify(&vk, &mut transcript, &comm, &point, &eval, &arg).unwrap();
 }

@@ -56,7 +56,7 @@ where
 }
 
 #[derive(Debug)]
-pub struct EvaluationEngine<E: Engine>
+pub struct EvaluationProcess<E: Engine>
 where
   E::GE: PairingGroup,
 {
@@ -94,7 +94,7 @@ where
   pub comm_ql: Commitment<E>,
 }
 
-impl<E: Engine> EvaluationEngine<E>
+impl<E: Engine> EvaluationProcess<E>
 where
   E::GE: PairingGroup,
   E: Engine<CE = CommitmentEngine<E>>,
@@ -449,7 +449,6 @@ impl<E: Engine> BatchKZGProof<E>
 where
   E: Engine<CE = CommitmentEngine<E>>,
   E::GE: PairingGroup,
-  <E::GE as PairingGroup>::GT: Debug,
 {
   pub fn verify(&self, vk: &VerifierKey<E>, eval: &BatchEvaluation<E::Scalar>) {
     let zeta = eval.zeta;
@@ -528,6 +527,6 @@ where
     let pairing_l = E::GE::pairing(&ll, &lr);
     let pairing_r = E::GE::pairing(&rl, &rr);
 
-    assert_eq!(pairing_l, pairing_r);
+    assert!(pairing_l == pairing_r);
   }
 }
