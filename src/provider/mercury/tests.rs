@@ -5,6 +5,7 @@ use halo2curves::bn256;
 use rand_core::OsRng;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
+use crate::provider::hyperkzg;
 use crate::provider::keccak::Keccak256Transcript;
 use crate::spartan::polys::eq::EqPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
@@ -392,7 +393,7 @@ fn test_batch_kzg() {
 
 #[test]
 fn test_mercury_ee() {
-  let log_n = 11;
+  let log_n = 22;
   let poly = make_random_poly::<F>(log_n);
   let point = (0..log_n).map(|_| F::random(OsRng)).collect::<Vec<_>>();
 
@@ -410,6 +411,7 @@ fn test_mercury_ee() {
 
   let comm = <E as Engine>::CE::commit(&ck, &poly.coeffs, &F::ZERO);
 
+  let start = Instant::now();
   let arg = EE::prove(
     &ck,
     &pk,
@@ -420,6 +422,35 @@ fn test_mercury_ee() {
     &eval,
   )
   .unwrap();
+  let dur = start.elapsed();
+
+  println!("Mercury: {:?}", &dur);
+
+  {
+    let (pk, vk) = hyperkzg::EvaluationEngine::setup(&ck);
+
+    let mut transcript = <E as Engine>::TE::new(b"test");
+
+    let start = Instant::now();
+    let arg = hyperkzg::EvaluationEngine::<E>::prove(
+      &ck,
+      &pk,
+      &mut transcript,
+      &comm,
+      &poly.coeffs,
+      &point,
+      &eval,
+    )
+    .unwrap();
+    let dur = start.elapsed();
+
+    println!("HyperKZG: {:?}", &dur);
+
+    let mut transcript = <E as Engine>::TE::new(b"test");
+
+    hyperkzg::EvaluationEngine::<E>::verify(&vk, &mut transcript, &comm, &point, &eval, &arg)
+      .unwrap();
+  }
 
   let mut transcript = <E as Engine>::TE::new(b"test");
 
