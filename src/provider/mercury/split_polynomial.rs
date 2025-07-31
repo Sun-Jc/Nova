@@ -3,119 +3,49 @@
 use ff::PrimeField;
 use rayon::prelude::*;
 
-use crate::spartan::polys::univariate::UniPoly;
+use crate::{provider::mercury::poly_ext::transpose_parallel, spartan::polys::univariate::UniPoly};
 
 /// Split a univariate polynomial into column polynomials by viewing coefficients as a 2D matrix
 pub fn split_polynomial<Scalar: PrimeField>(
   polynomial: &UniPoly<Scalar>,
-  log_n: u32,
+  b: usize,
 ) -> Vec<UniPoly<Scalar>> {
-  assert!(log_n % 2 == 0, "log_n must be even (log_n = 2*b)");
+  let coeffs = transpose_parallel(&polynomial.coeffs, b, b);
 
-  let b = 1 << (log_n / 2);
-
-  assert_eq!(
-    polynomial.coeffs.len(),
-    1 << log_n,
-    "Polynomial must have exactly 2^log_n coefficients"
-  );
-
-  (0..b)
-    .into_par_iter()
-    .map(|col| {
-      let column_coeffs = (0..b)
-        .into_par_iter()
-        .map(|row| polynomial.coeffs[row * b + col])
-        .collect();
-
-      UniPoly {
-        coeffs: column_coeffs,
-      }
+  coeffs
+    .par_chunks(b)
+    .map(|c| UniPoly {
+      coeffs: c.to_owned(),
     })
     .collect()
 }
 
 /// Divide a polynomial by x^b - alpha
 /// Returns (quotient, remainder)
-pub fn divide_polynomial_by_x_b_alpha<Scalar: PrimeField>(
-  polynomial: &UniPoly<Scalar>,
-  log_n: u32,
-  alpha: &Scalar,
-) -> (UniPoly<Scalar>, UniPoly<Scalar>) {
-  assert!(log_n % 2 == 0, "log_n must be even (log_n = 2*b)");
-
-  let b = 1 << (log_n / 2);
-
-  let split_res = split_polynomial(polynomial, log_n);
-
-  // let split_res = polynomial
-  //   .coeffs
-  //   .chunks(b)
-  //   .map(|c| UniPoly { coeffs: c.to_vec() })
-  //   .collect::<Vec<_>>();
-
-  let (quotients, remainder_coefficients): (Vec<Vec<Scalar>>, Vec<Scalar>) = split_res
-    .into_par_iter()
-    .map(|p| {
-      let (mut quotient, remainder) = p.into_div_by_deg_one_polynomial(alpha);
-      quotient.raise(b);
-      (quotient.coeffs, remainder)
-    })
-    .unzip();
-
-  let untransposed_quotient_coefficients = quotients.into_iter().flatten().collect::<Vec<_>>();
-  let quotient_coefficients: Vec<Scalar> = (0..b * b)
-    .into_par_iter()
-    .map(|i| {
-      let col = i / b;
-      let row = i % b;
-      untransposed_quotient_coefficients[row * b + col]
-    })
-    .collect();
-
-  // let quotient_coefficients = untransposed_quotient_coefficients;
-
-  (
-    UniPoly {
-      coeffs: quotient_coefficients,
-    },
-    UniPoly {
-      coeffs: remainder_coefficients,
-    },
-  )
-}
-
-/// Divide a polynomial by x^b - alpha
-/// Returns (quotient, remainder)
-pub fn divide_polynomial_by_x_b_alpha2<Scalar: PrimeField>(
+pub fn divide_by_binomial<Scalar: PrimeField>(
   split_res: &[UniPoly<Scalar>],
-  log_n: u32,
   alpha: &Scalar,
 ) -> (UniPoly<Scalar>, UniPoly<Scalar>) {
-  assert!(log_n % 2 == 0, "log_n must be even (log_n = 2*b)");
-
-  let b = 1 << (log_n / 2);
+  let num_col = split_res.len();
+  let num_row = split_res[0].coeffs.len();
 
   let (quotients, remainder_coefficients): (Vec<Vec<Scalar>>, Vec<Scalar>) = split_res
     .into_par_iter()
     .map(|p| {
       let (mut quotient, remainder) = p.clone().into_div_by_deg_one_polynomial(alpha);
-      quotient.raise(b);
+      quotient.raise(num_row);
       (quotient.coeffs, remainder)
     })
     .unzip();
 
-  let untransposed_quotient_coefficients = quotients.into_iter().flatten().collect::<Vec<_>>();
-  let quotient_coefficients: Vec<Scalar> = (0..b * b)
-    .into_par_iter()
-    .map(|i| {
-      let col = i / b;
-      let row = i % b;
-      untransposed_quotient_coefficients[row * b + col]
-    })
-    .collect();
+  assert_eq!(quotients.len(), num_col);
+  assert_eq!(quotients[0].len(), num_row);
 
-  // let quotient_coefficients = untransposed_quotient_coefficients;
+  let untransposed_quotient_coefficients = quotients.into_iter().flatten().collect::<Vec<_>>();
+  let quotient_coefficients =
+    transpose_parallel(&untransposed_quotient_coefficients, num_row, num_col);
+
+  assert_eq!(quotient_coefficients.len(), num_col * num_row);
 
   (
     UniPoly {

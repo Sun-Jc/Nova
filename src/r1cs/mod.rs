@@ -129,6 +129,8 @@ impl<E: Engine> R1CSShape<E> {
   pub fn commitment_key(&self, ck_floor: &CommitmentKeyHint<E>) -> CommitmentKey<E> {
     let num_cons = self.num_cons;
     let num_vars = self.num_vars;
+    // TODO Larger
+    let num_vars = 1 << 20;
     let ck_hint = ck_floor(self);
     E::CE::setup(b"ck", max(max(num_cons, num_vars), ck_hint))
   }

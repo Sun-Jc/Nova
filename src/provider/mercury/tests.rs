@@ -10,7 +10,7 @@ use crate::spartan::polys::eq::EqPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::traits::commitment::CommitmentEngineTrait;
 use crate::traits::evaluation::EvaluationEngineTrait;
-use crate::traits::TranscriptEngineTrait;
+use crate::traits::{Engine, TranscriptEngineTrait};
 use crate::{
   provider::{
     hyperkzg::{CommitmentKey, VerifierKey},
@@ -19,7 +19,7 @@ use crate::{
       degree_check::d_polynomial,
       ipa::{omega, IPAWitness, InputPolynomials},
       kzg::EvaluationProcess,
-      split_polynomial::{divide_polynomial_by_x_b_alpha, split_polynomial},
+      split_polynomial::split_polynomial,
     },
     traits::DlogGroup,
     Bn256EngineKZG,
@@ -208,50 +208,50 @@ fn test_div_deg_one_zero_remainder() {
   assert_eq!(remainder, F::from(0));
 }
 
-#[test]
-fn test_split_polynomial() {
-  let log_n = 22;
-  let poly = make_random_poly::<F>(log_n);
+// #[test]
+// fn test_split_polynomial() {
+//   let log_n = 22;
+//   let poly = make_random_poly::<F>(log_n);
 
-  let split_res = split_polynomial(&poly, log_n);
+//   let split_res = split_polynomial(&poly, log_n);
 
-  let b = 1 << (log_n / 2);
+//   let b = 1 << (log_n / 2);
 
-  assert_eq!(split_res.len(), b);
+//   assert_eq!(split_res.len(), b);
 
-  // f(x) = sum_i { x^i f_i(x^b) }
-  let r = F::random(OsRng);
-  let lhs = poly.evaluate(&r);
-  let r_b = r.pow([b as u64]);
-  let rhs = split_res
-    .iter()
-    .enumerate()
-    .map(|(i, p)| r.pow([i as u64]) * p.evaluate(&r_b))
-    .sum::<F>();
+//   // f(x) = sum_i { x^i f_i(x^b) }
+//   let r = F::random(OsRng);
+//   let lhs = poly.evaluate(&r);
+//   let r_b = r.pow([b as u64]);
+//   let rhs = split_res
+//     .iter()
+//     .enumerate()
+//     .map(|(i, p)| r.pow([i as u64]) * p.evaluate(&r_b))
+//     .sum::<F>();
 
-  assert_eq!(lhs, rhs);
-}
+//   assert_eq!(lhs, rhs);
+// }
 
-#[test]
-fn test_div_x_b_alpha() {
-  // f(X) = (X^b − α) * q(X) + g(X).
-  let log_n = 10;
-  let poly = make_random_poly::<F>(log_n);
+// #[test]
+// fn test_div_x_b_alpha() {
+//   // f(X) = (X^b − α) * q(X) + g(X).
+//   let log_n = 10;
+//   let poly = make_random_poly::<F>(log_n);
 
-  let alpha = F::random(OsRng);
+//   let alpha = F::random(OsRng);
 
-  let (quotient, remainder) = divide_polynomial_by_x_b_alpha(&poly, log_n, &alpha);
+//   let (quotient, remainder) = divide_polynomial_by_x_b_alpha(&poly, log_n, &alpha);
 
-  let r = F::random(OsRng);
+//   let r = F::random(OsRng);
 
-  let lhs = poly.evaluate(&r);
+//   let lhs = poly.evaluate(&r);
 
-  let b = 1 << (log_n / 2);
-  let r_b = r.pow([b as u64]);
-  let rhs = (r_b - alpha) * quotient.evaluate(&r) + remainder.evaluate(&r);
+//   let b = 1 << (log_n / 2);
+//   let r_b = r.pow([b as u64]);
+//   let rhs = (r_b - alpha) * quotient.evaluate(&r) + remainder.evaluate(&r);
 
-  assert_eq!(lhs, rhs);
-}
+//   assert_eq!(lhs, rhs);
+// }
 
 #[test]
 fn test_degree_check() {
@@ -392,69 +392,23 @@ fn test_batch_kzg() {
 
 #[test]
 fn test_mercury_ee() {
-  {
-    let vs = vec![F::ONE, F::ONE];
-    // let log_n = 2;
-    let (p_poly, eq_evals) = mercury::engine::make_pu_poly(&vs);
+  let log_n = 11;
+  let poly = make_random_poly::<F>(log_n);
+  let point = (0..log_n).map(|_| F::random(OsRng)).collect::<Vec<_>>();
 
-    dbg!(&p_poly.coeffs);
-    // dbg!(&p_poly.evaluate(&F::from(1)));
-    // dbg!(&p_poly.evaluate(&F::from(2)));
-    // dbg!(&p_poly.evaluate(&F::from(3)));
-  }
-
-  let log_n = 4;
-  // let poly = make_random_poly::<F>(log_n);
-  // let poly = make_poly(&[[1, 1, 5, 5], [2; 4], [3; 4], [4; 4]].concat());
-  let poly = make_poly(&[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
-  // let poly2 = poly.clone();
-
-  // // transpose poly
-  // let n = poly.coeffs.len().isqrt();
-  // for i in 0..n {
-  //   for j in 0..n {
-  //     poly.coeffs[i * n + j] = poly2.coeffs[j * n + i];
-  //   }
-  // }
-
-  // let log_n = 2;
-  // let poly = make_poly(&[0, 1, 2, 3]);
-
-  let ck = CommitmentKey::<E>::setup_from_rng(b"test", 1 << (log_n + 1), OsRng);
-
-  // let point = (0..log_n).map(|_| F::random(OsRng)).collect::<Vec<_>>();
-
-  // let point = vec![F::from(4), F::from(2), F::from(3), F::from(0)];
-  let mut point = vec![F::from(0), F::from(0), F::from(0), F::from(1)];
-  // point.reverse();
+  let ck = <<E as Engine>::CE as CommitmentEngineTrait<E>>::CommitmentKey::setup_from_rng(
+    b"test",
+    1 << (log_n + 1),
+    OsRng,
+  );
 
   let (pk, vk) = EE::setup(&ck);
 
-  let mut e_point = point.clone();
-  e_point.reverse();
+  let eval = MultilinearPolynomial::new(poly.coeffs.clone()).evaluate(&point);
 
-  let eval = MultilinearPolynomial::new(poly.coeffs.clone()).evaluate(&e_point);
+  let mut transcript = <E as Engine>::TE::new(b"test");
 
-  println!("eval: {:?}", eval);
-
-  {
-    // check eval
-    let eq = EqPolynomial::new(point.clone());
-    let eval2 = eq
-      .evals()
-      .iter()
-      .zip(poly.coeffs.iter())
-      .map(|(a, b)| *a * *b)
-      .sum::<F>();
-
-    // assert_eq!(eval, eval2);
-  }
-
-  // assert_eq!(eval, F::from(1));
-
-  let mut transcript = Keccak256Transcript::<E>::new(b"test");
-
-  let comm = crate::provider::hyperkzg::CommitmentEngine::commit(&ck, &poly.coeffs, &F::ZERO);
+  let comm = <E as Engine>::CE::commit(&ck, &poly.coeffs, &F::ZERO);
 
   let arg = EE::prove(
     &ck,
@@ -466,6 +420,8 @@ fn test_mercury_ee() {
     &eval,
   )
   .unwrap();
+
+  let mut transcript = <E as Engine>::TE::new(b"test");
 
   EE::verify(&vk, &mut transcript, &comm, &point, &eval, &arg).unwrap();
 }

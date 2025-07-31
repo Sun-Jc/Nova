@@ -7,11 +7,9 @@ use crate::{
   provider::{
     hyperkzg::{Commitment, CommitmentEngine},
     mercury::{
-      ipa::{make_s_polynomial, IPAWitness, InputPolynomials},
-      kzg::{BatchEvaluation, BatchKZGProof, EvaluationProcess},
-      split_polynomial::{
-        divide_polynomial_by_x_b_alpha, divide_polynomial_by_x_b_alpha2, split_polynomial,
-      },
+      ipa::make_s_polynomial,
+      kzg::EvaluationProcess,
+      split_polynomial::{divide_by_binomial, split_polynomial},
     },
     traits::{DlogGroup, PairingGroup},
   },
@@ -23,10 +21,6 @@ use crate::{
 };
 
 use ff::{Field, PrimeField};
-use rand_core::OsRng;
-use rayon::iter::{
-  IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-};
 use serde::{Deserialize, Serialize};
 
 /// Alias to points on G1 that are in preprocessed form
@@ -100,53 +94,21 @@ where
 }
 
 // P_u(X) = prod(uiX^{2^i} + 1 - u_i)
-pub fn make_pu_poly<Scalar: PrimeField>(u: &[Scalar]) -> (UniPoly<Scalar>, Vec<Scalar>) {
-  // let log_n = u.len();
+fn make_pu_poly<Scalar: PrimeField>(u: &[Scalar]) -> UniPoly<Scalar> {
+  let mut u = u.to_vec();
+  u.reverse();
 
-  // let mv_eq_poly = EqPolynomial::new(u.to_vec());
-  // let xs = 0..1 << log_n as usize;
+  let evals = EqPolynomial::new(u).evals();
 
-  // let to_bits = |i: usize| {
-  //   (0..log_n as usize)
-  //     .map(|j| {
-  //       if (i >> j) & 1 == 1 {
-  //         Scalar::ONE
-  //       } else {
-  //         Scalar::ZERO
-  //       }
-  //     })
-  //     .rev()
-  //     .collect::<Vec<_>>()
-  // };
+  UniPoly { coeffs: evals }
+}
 
-  // let evals = xs
-  //   .into_par_iter()
-  //   .map(|i| mv_eq_poly.evaluate(&to_bits(i)))
-  //   .collect::<Vec<_>>();
-
-  // (
-  //   UniPoly {
-  //     coeffs: evals.clone(),
-  //   },
-  //   evals,
-  // )
-
-  let mut evals = EqPolynomial::new(u.to_vec()).evals();
-  // transpose evals
-  let n_evals = evals.clone();
-  let n = n_evals.len().isqrt();
-  for i in 0..n {
-    for j in 0..n {
-      evals[i * n + j] = n_evals[j * n + i];
-    }
+fn eval_pu_poly<Scalar: PrimeField>(u: &[Scalar], r: &Scalar) -> Scalar {
+  let mut res = Scalar::ONE;
+  for (i, u_i) in u.iter().enumerate() {
+    res *= *u_i * r.pow([1 << i]) + Scalar::ONE - u_i;
   }
-
-  (
-    UniPoly {
-      coeffs: evals.clone(),
-    },
-    evals,
-  )
+  res
 }
 
 impl<E: Engine> EvaluationEngineTrait<E> for EvaluationEngine<E>
@@ -184,200 +146,132 @@ where
   ) -> Result<Self::EvaluationArgument, NovaError> {
     let comm_f = comm;
 
-    let mut point = point.to_vec();
-    // point.reverse();
+    let point = point.to_vec();
 
-    let (f_poly, log_n, point_l, point_r) = {
+    let mut point = point.to_vec();
+    point.reverse();
+
+    let (f_poly, log_n, b, point_l, point_r) = {
       // Round 0: Prepare
       let mut f = UniPoly {
         coeffs: poly.to_vec(),
       };
 
-      // transpose f_poly
-      // let n = f.coeffs.len().isqrt();
-      // for i in 0..n {
-      //   for j in 0..n {
-      //     f.coeffs[i * n + j] = poly[j * n + i];
-      //   }
-      // }
-
-      let mut log_n = f.log_n();
-      if log_n % 2 == 1 {
+      let mut log_n = point.len();
+      if log_n % 2 != 0 {
         log_n += 1;
+
+        point.push(E::Scalar::ZERO);
+        f.raise(1 << log_n);
       }
 
-      f.raise(1 << log_n as usize);
+      let b = 1 << (log_n / 2);
 
-      let (point_l, point_r) = point.split_at(log_n as usize / 2);
+      f.raise(1 << log_n);
 
-      (f, log_n, point_l.to_vec(), point_r.to_vec())
+      let (point_l, point_r) = point.split_at(log_n / 2);
+
+      (f, log_n, b, point_l.to_vec(), point_r.to_vec())
     };
 
-    // let mut point_l = point_l.to_vec();
-    // point_l.reverse();
-    // let mut point_r = point_r.to_vec();
-    // point_r.reverse();
+    let p_poly1 = make_pu_poly(&point_l);
+    let p_poly2 = make_pu_poly(&point_r);
 
-    // let point_l = point_r.to_vec();
-    // let point_r = point_l.to_vec();
+    assert_eq!(p_poly1.coeffs.len(), b);
+    assert_eq!(p_poly2.coeffs.len(), b);
 
-    let b = 1 << (log_n / 2);
-
-    let (p_poly1, eq_evals1) = make_pu_poly(&point_l);
-    let (p_poly2, eq_evals2) = make_pu_poly(&point_r);
-
+    #[cfg(debug_assertions)]
     {
-      dbg!(&point_l);
-      dbg!(&point_r);
-      dbg!(&p_poly1.coeffs);
-      dbg!(&p_poly2.coeffs);
-      let r = E::Scalar::from(12);
-      dbg!(&p_poly1.evaluate(&r));
-      dbg!(&p_poly2.evaluate(&r));
-    }
-
-    {
-      let eval_pu = |u: &[E::Scalar], x: E::Scalar| {
-        let mut res = E::Scalar::ONE;
-        for (i, &ui) in u.iter().rev().enumerate() {
-          res *= x.pow_vartime(&[1 << i as u64]) * ui + E::Scalar::ONE - ui;
-        }
-        res
-      };
+      // Check pu1(X), pu2(X)
+      use rand_core::OsRng;
 
       let r = E::Scalar::random(OsRng);
-      // assert_eq!(eval_pu(&point_l, r), p_poly1.evaluate(&r));
+      let pu1_eval_expected = eval_pu_poly(&point_l, &r);
+      let pu2_eval_expected = eval_pu_poly(&point_r, &r);
 
-      // assert_eq!(eval_pu(&point_r, r), p_poly2.evaluate(&r));
+      let pu1_eval_actual = p_poly1.evaluate(&r);
+      let pu2_eval_actual = p_poly2.evaluate(&r);
+
+      assert_eq!(pu1_eval_expected, pu1_eval_actual);
+      assert_eq!(pu2_eval_expected, pu2_eval_actual);
     }
-
-    // Get h_poly
-    // let h_poly = {
-    //   let mut sub_fs = f_poly
-    //     .coeffs
-    //     .chunks(b)
-    //     .map(|c| UniPoly { coeffs: c.to_vec() })
-    //     .collect::<Vec<_>>();
-
-    //   // let mut sub_fs = split_polynomial(&f_poly, log_n);
-
-    //   // sub_fs.par_iter_mut().enumerate().for_each(|(i, sub_f)| {
-    //   //   let lhs = eq_evals1[i];
-    //   //   sub_f.scale(&lhs);
-    //   // });
-
-    //   for i in 0..sub_fs.len() {
-    //     let lhs = eq_evals1[i];
-    //     sub_fs[i].scale(&lhs);
-    //   }
-
-    //   // TODO: parallelize this
-    //   let mut h_poly = sub_fs[0].clone();
-    //   for sub_f in sub_fs.iter().skip(1) {
-    //     h_poly = h_poly.into_add_by_polynomial(sub_f);
-    //   }
-    //   h_poly
-    // };
 
     let h_poly = {
       let mut coeffs = vec![E::Scalar::ZERO; b];
-      for j in 0..b {
-        for i in 0..b {
-          coeffs[j] += f_poly.coeffs[j * b + i] * eq_evals1[i];
+
+      for (j, coeff) in coeffs.iter_mut().enumerate() {
+        for (i, eq_eval) in p_poly1.coeffs.iter().enumerate().take(b) {
+          *coeff += f_poly.coeffs[j * b + i] * eq_eval;
         }
       }
       UniPoly { coeffs }
     };
 
+    #[cfg(debug_assertions)]
     {
-      dbg!(&h_poly.coeffs);
-      // todo!();
-    }
+      // Check h, eq_evals2 ipa vs eval
 
-    {
-      // check h_poly
-      let mut e2 = E::Scalar::ZERO;
-      for (i, h) in h_poly.coeffs.iter().enumerate() {
-        e2 += *h * eq_evals2[i];
-      }
+      let eq_evals2 = p_poly2.coeffs.clone();
 
-      dbg!(&eq_evals1);
-      dbg!(&eq_evals2);
+      assert_eq!(eq_evals2.len(), h_poly.coeffs.len());
 
-      dbg!(&h_poly.coeffs);
+      let ip = eq_evals2
+        .iter()
+        .zip(h_poly.coeffs.iter())
+        .map(|(a, b)| *a * *b)
+        .sum::<E::Scalar>();
 
-      // assert_eq!(e2, *_eval);
-      dbg!(&e2);
+      assert_eq!(ip, *_eval);
     }
 
     let comm_h = E::CE::commit(ck, &h_poly.coeffs, &E::Scalar::ZERO);
 
     transcript.absorb(b"f", &[*comm_f, comm_h].to_vec().as_slice());
-    // let alpha = transcript.squeeze(b"alpha")?;
-    let alpha = E::Scalar::from(1);
+    let alpha = transcript.squeeze(b"alpha")?;
 
     // Get q(X) and g(X)
-    let (q_poly, g_poly) = divide_polynomial_by_x_b_alpha(&f_poly, log_n, &alpha);
+    let (q_poly, g_poly) = {
+      let f_col_sub_poly = split_polynomial(&f_poly, b);
 
+      assert_eq!(f_col_sub_poly.len(), b);
+      assert_eq!(f_col_sub_poly[0].coeffs.len(), b);
+
+      divide_by_binomial(&f_col_sub_poly, &alpha)
+    };
+
+    assert_eq!(g_poly.coeffs.len(), b);
+
+    #[cfg(debug_assertions)]
     {
-      // Check q,g
-      // f(X) = (X^b - alpha) * q(X) + g(X)
-      let r = E::Scalar::random(OsRng);
-      let lhs = f_poly.evaluate(&r);
-      let rhs =
-        (r.pow([1 << (log_n / 2) as u64]) - alpha) * q_poly.evaluate(&r) + g_poly.evaluate(&r);
-      assert_eq!(lhs, rhs);
+      // Check g
+      let f_col_sub_poly = split_polynomial(&f_poly, b);
+      let f_alphas = f_col_sub_poly
+        .iter()
+        .map(|p| p.evaluate(&alpha))
+        .collect::<Vec<_>>();
 
-      dbg!(&f_poly.coeffs);
-      dbg!(&q_poly.coeffs);
-      dbg!(&g_poly.coeffs);
-    }
-
-    {
-      // gx is col
-      let split_res = split_polynomial(&f_poly, log_n);
-      for i in 0..b {
-        assert_eq!(split_res[i].evaluate(&alpha), g_poly.coeffs[i]);
-      }
-    }
-
-    {
-      // let mut g_poly_coeffs = g_poly.coeffs.clone();
-      // let split_res = f_poly
-      //   .coeffs
-      //   .chunks(b)
-      //   .map(|c| UniPoly { coeffs: c.to_vec() })
-      //   .collect::<Vec<_>>();
-      // for i in 0..b {
-      //   g_poly_coeffs[i] = split_res[i].evaluate(&alpha);
-      // }
-
-      // let g_poly = UniPoly {
-      //   coeffs: g_poly_coeffs,
-      // };
-
-      // check g and h_alpha
-      assert_eq!(g_poly.coeffs.len(), b);
-
-      let res = eq_evals1
+      f_alphas
         .iter()
         .zip(g_poly.coeffs.iter())
-        .map(|a| *a.0 * *a.1)
-        .sum::<E::Scalar>();
-
-      dbg!(&g_poly.coeffs.len());
-      dbg!(&h_poly.evaluate(&alpha));
-      assert_eq!(res, h_poly.evaluate(&alpha));
+        .for_each(|(a, b)| {
+          assert_eq!(*b, *a);
+        });
     }
 
-    // let mut q_poly = q_poly;
-    // q_poly.trim();
+    #[cfg(debug_assertions)]
+    {
+      // Check q, g
+      // f(r) = (X^b - alpha) * q(r) + g(r)
 
-    dbg!(&q_poly.coeffs.len());
-    dbg!(&g_poly.coeffs.len());
+      use rand_core::OsRng;
+      let r = E::Scalar::random(OsRng);
 
-    // assert_eq!(q_poly.log_n(), log_n / 2);
-    // assert_eq!(g_poly.log_n(), log_n / 2);
+      let f_r = f_poly.evaluate(&r);
+      let q_r = q_poly.evaluate(&r);
+      let g_r = g_poly.evaluate(&r);
+
+      assert_eq!(f_r, (r.pow([b as u64]) - alpha) * q_r + g_r);
+    }
 
     let comm_q = E::CE::commit(ck, &q_poly.coeffs, &E::Scalar::ZERO);
     let comm_g = E::CE::commit(ck, &g_poly.coeffs, &E::Scalar::ZERO);
@@ -386,83 +280,73 @@ where
 
     let h_alpha = h_poly.evaluate(&alpha);
 
+    #[cfg(debug_assertions)]
+    {
+      // Check g eq_evals1 ipa vs h_alpha
+      let ip = p_poly1
+        .coeffs
+        .iter()
+        .zip(g_poly.coeffs.iter())
+        .map(|(a, b)| *a * *b)
+        .sum::<E::Scalar>();
+
+      assert_eq!(ip, h_alpha);
+    }
+
     transcript.absorb(b"h_alpha", &h_alpha);
 
     let gamma = transcript.squeeze(b"gamma")?;
 
     // Get s(X) for ipa
     let s_poly = {
-      dbg!(&g_poly.coeffs.len());
-      dbg!(&h_poly.coeffs.len());
-      dbg!(&p_poly1.coeffs.len());
-      dbg!(&p_poly2.coeffs.len());
-
-      // let p_poly1 = UniPoly { coeffs: eq_evals1 };
-
       let left_polys = vec![p_poly1.clone(), p_poly2.clone()];
       let right_polys = vec![g_poly.clone(), h_poly.clone()];
 
       assert_eq!(p_poly1.coeffs.len(), g_poly.coeffs.len());
+      assert_eq!(p_poly2.coeffs.len(), h_poly.coeffs.len());
 
-      {
-        let wit = IPAWitness::generate(
-          log_n / 2,
-          InputPolynomials {
-            lhs: left_polys.clone(),
-            rhs: right_polys.clone(),
-          },
-          &gamma,
-        );
-
-        dbg!(log_n);
-        dbg!(&wit.s_polynomial.coeffs.len());
-
-        assert_eq!(wit.products[0], h_alpha);
-        assert_eq!(wit.products[1], *_eval);
-      }
-
-      make_s_polynomial(left_polys, right_polys, log_n / 2, &gamma)
+      make_s_polynomial(left_polys, right_polys, log_n as u32 / 2, &gamma)
     };
 
+    #[cfg(debug_assertions)]
     {
-      // Check s
-      let r = E::Scalar::from(12);
+      // Check s_poly IPA proof
+
+      use rand_core::OsRng;
+      let r = E::Scalar::random(OsRng);
       let r_inv = r.invert().unwrap();
-      let lhs_l = g_poly.evaluate(&r) * p_poly1.evaluate(&r_inv)
-        + g_poly.evaluate(&r_inv) * p_poly1.evaluate(&r);
-      let lhs_r = h_poly.evaluate(&r) * p_poly2.evaluate(&r_inv)
-        + h_poly.evaluate(&r_inv) * p_poly2.evaluate(&r);
 
-      let lhs = lhs_l + lhs_r * gamma;
+      let g_r = g_poly.evaluate(&r);
+      let g_r_inv = g_poly.evaluate(&r_inv);
+      let h_r = h_poly.evaluate(&r);
+      let h_r_inv = h_poly.evaluate(&r_inv);
+      let pu1_r = eval_pu_poly(&point_l, &r);
+      let pu1_r_inv = eval_pu_poly(&point_l, &r_inv);
+      let pu2_r = eval_pu_poly(&point_r, &r);
+      let pu2_r_inv = eval_pu_poly(&point_r, &r_inv);
 
-      let rhs = h_poly.evaluate(&alpha) + *_eval * gamma;
-      let rhs = rhs + rhs;
-      let rhs = rhs + r * s_poly.evaluate(&r) + r_inv * s_poly.evaluate(&r_inv);
+      let s_r = s_poly.evaluate(&r);
+      let s_r_inv = s_poly.evaluate(&r_inv);
+
+      let mut lhs = g_r * pu1_r_inv + g_r_inv * pu1_r;
+      lhs += gamma * (h_r * pu2_r_inv + h_r_inv * pu2_r);
+
+      let mut rhs = h_alpha + gamma * _eval;
+      rhs += rhs;
+      rhs += r * s_r + r_inv * s_r_inv;
 
       assert_eq!(lhs, rhs);
     }
-
-    dbg!(&s_poly.coeffs.len());
 
     // Get d(X) for degree check
     let d_poly = {
       let mut d_poly = g_poly.clone();
-      assert_eq!(d_poly.coeffs.len(), 1 << (log_n / 2));
+
+      assert_eq!(d_poly.coeffs.len(), b);
+
       d_poly.coeffs.reverse();
       d_poly
     };
-
-    {
-      // check d_poly
-      let r = E::Scalar::from(12);
-      let r_inv = r.invert().unwrap();
-      let rhs = d_poly.evaluate(&r);
-      // assert_eq!(1_u64 << (log_n / 2) - 1, g_poly.coeffs.len() as u64 - 1);
-      let lhs = g_poly.evaluate(&r_inv) * r.pow_vartime(&[(1_u64 << (log_n / 2)) - 1]);
-      dbg!(&g_poly.coeffs);
-      dbg!(&d_poly.coeffs);
-      assert_eq!(lhs, rhs);
-    }
 
     let comm_s = E::CE::commit(ck, &s_poly.coeffs, &E::Scalar::ZERO);
     let comm_d = E::CE::commit(ck, &d_poly.coeffs, &E::Scalar::ZERO);
@@ -477,23 +361,12 @@ where
     let (quot_poly, rem) = {
       let g_zeta = batch_eval.g_zeta;
 
-      // let zeta_b = zeta.pow_vartime(&[1_u64 << (log_n / 2)]);
+      let zeta_b = zeta.pow([b as u64]);
 
-      let zeta_b = zeta.pow(&[b as u64]);
-
-      dbg!(&[1_u64 << (log_n / 2)]);
       let zeta_b_alpha = zeta_b - alpha;
 
       let mut new_q = q_poly.clone();
       new_q.scale(&zeta_b_alpha);
-
-      // f_poly
-      //   .clone()
-      //   .into_sub_by_polynomial(&new_q)
-      //   .into_sub_by_polynomial(&UniPoly {
-      //     coeffs: vec![g_zeta],
-      //   })
-      //   .into_div_by_deg_one_polynomial(&zeta)
 
       let mut tmp = f_poly.clone().into_sub_by_polynomial(&new_q);
 
@@ -554,29 +427,33 @@ where
   /// A method to verify the purported evaluation of a multilinear polynomials
   fn verify(
     vk: &Self::VerifierKey,
-    _transcript: &mut E::TE,
+    transcript: &mut E::TE,
     comm: &<<E as Engine>::CE as CommitmentEngineTrait<E>>::Commitment,
     point: &[E::Scalar],
     eval: &E::Scalar,
     arg: &Self::EvaluationArgument,
   ) -> Result<(), NovaError> {
-    let log_n = point.len();
-    assert_eq!(log_n % 2, 0);
+    let mut point = point.to_vec();
+    point.reverse();
+
+    let mut log_n = point.len();
+    if log_n % 2 != 0 {
+      log_n += 1;
+
+      point.push(E::Scalar::ZERO);
+    }
+
     let (point_l, point_r) = point.split_at(log_n / 2);
     let (point_l, point_r) = (point_l.to_vec(), point_r.to_vec());
-
-    let (eq_poly_1, _) = make_pu_poly(&point_l);
-    let (eq_poly_2, _) = make_pu_poly(&point_r);
 
     let zeta = arg.zeta;
     let zeta_inv = zeta.invert().unwrap();
 
-    let pu1_zeta = eq_poly_1.evaluate(&zeta);
-    let pu2_zeta = eq_poly_2.evaluate(&zeta);
-    let pu1_zeta_inv = eq_poly_1.evaluate(&zeta_inv);
-    let pu2_zeta_inv = eq_poly_2.evaluate(&zeta_inv);
+    let pu1_zeta = eval_pu_poly(&point_l, &zeta);
+    let pu1_zeta_inv = eval_pu_poly(&point_l, &zeta_inv);
+    let pu2_zeta = eval_pu_poly(&point_r, &zeta);
+    let pu2_zeta_inv = eval_pu_poly(&point_r, &zeta_inv);
 
-    // Check IPA
     let g_zeta = arg.g_zeta;
     let h_zeta = arg.h_zeta;
     let g_zeta_inv = arg.g_zeta_inv;
@@ -585,39 +462,8 @@ where
     let s_zeta_inv = arg.s_zeta_inv;
     let gamma = arg.gamma;
     let h_alpha = arg.h_alpha;
-
-    // dbg!(eval_p(&point_l, E::Scalar::from(2)));
-    dbg!(&eq_poly_1.evaluate(&E::Scalar::from(2)));
-
-    let mut lhs = g_zeta * pu1_zeta_inv + g_zeta_inv * pu1_zeta;
-    lhs += gamma * (h_zeta * pu2_zeta_inv + h_zeta_inv * pu2_zeta);
-
-    let mut rhs = h_alpha + gamma * *eval;
-    rhs += rhs;
-    rhs += zeta * s_zeta + zeta_inv * s_zeta_inv;
-
-    assert_eq!(lhs, rhs);
-
-    if lhs != rhs {
-      return Err(NovaError::ProofVerifyError {
-        reason: "IPA check failed".to_string(),
-      });
-    }
-
-    // Check degree
     let d_zeta = arg.d_zeta;
-    let g_zeta_inv = arg.g_zeta_inv;
-    let zeta_b_one = zeta.pow_vartime(&[(1_u64 << (log_n / 2)) - 1]);
-    dbg!(&zeta_b_one);
-    dbg!(&g_zeta_inv);
-    dbg!(&d_zeta);
-    if d_zeta != zeta_b_one * g_zeta_inv {
-      return Err(NovaError::ProofVerifyError {
-        reason: "Degree check failed".to_string(),
-      });
-    }
 
-    // Check g(X)
     let alpha = arg.alpha;
 
     let comm_f = comm;
@@ -628,31 +474,80 @@ where
     let comm_q = arg.comm_q;
     let comm_quot_f_x_zeta = arg.comm_quot_f_x_zeta;
 
-    let zeta_b = zeta_b_one * zeta;
-    let zeta_b_alpha = zeta_b - alpha;
-    let g1 = Commitment::new(DlogGroup::group(&vk.g));
+    // 1. Check IPA
+    {
+      let mut lhs = g_zeta * pu1_zeta_inv + g_zeta_inv * pu1_zeta;
+      lhs += gamma * (h_zeta * pu2_zeta_inv + h_zeta_inv * pu2_zeta);
 
-    let g2 = <<E as Engine>::GE as PairingGroup>::G2::gen();
-    let tau2 = <E::GE as PairingGroup>::G2::group(&vk.tau_h);
+      let mut rhs = h_alpha + gamma * *eval;
+      rhs += rhs;
+      rhs += zeta * s_zeta + zeta_inv * s_zeta_inv;
 
-    let ll = *comm_f + comm_q * (-zeta_b_alpha) + g1 * (-g_zeta);
-    let lr = g2.clone();
-    let rl = comm_quot_f_x_zeta;
-    let rr = g2 * (-zeta) + tau2;
+      assert_eq!(lhs, rhs);
 
-    let pairing_l = E::GE::pairing(&ll.into_inner(), &lr);
-    let pairing_r = E::GE::pairing(&rl.into_inner(), &rr);
-    if pairing_l != pairing_r {
-      return Err(NovaError::ProofVerifyError {
-        reason: "g Check Paring check failed".to_string(),
-      });
+      if lhs != rhs {
+        return Err(NovaError::ProofVerifyError {
+          reason: "IPA check failed".to_string(),
+        });
+      }
     }
 
-    // Check KZG
+    // 2. Check degree
+    let zeta_b_one = zeta.pow_vartime([(1_u64 << (log_n / 2)) - 1]);
     {
-      let z = arg.z;
-      let beta = arg.beta;
+      if d_zeta != zeta_b_one * g_zeta_inv {
+        return Err(NovaError::ProofVerifyError {
+          reason: "Degree check failed".to_string(),
+        });
+      }
+    }
 
+    // 3. Check f(X) / (X^b - alpha) = (q(X), g(x))
+    {
+      let zeta_b = zeta_b_one * zeta;
+      let zeta_b_alpha = zeta_b - alpha;
+      let g1 = Commitment::new(DlogGroup::group(&vk.g));
+
+      let g2 = <<E as Engine>::GE as PairingGroup>::G2::gen();
+      let tau2 = <E::GE as PairingGroup>::G2::group(&vk.tau_h);
+
+      let ll = *comm_f + comm_q * (-zeta_b_alpha) + g1 * (-g_zeta);
+      let lr = g2;
+      let rl = comm_quot_f_x_zeta;
+      let rr = g2 * (-zeta) + tau2;
+
+      let pairing_l = E::GE::pairing(&ll.into_inner(), &lr);
+      let pairing_r = E::GE::pairing(&rl.into_inner(), &rr);
+
+      if pairing_l != pairing_r {
+        return Err(NovaError::ProofVerifyError {
+          reason: "g Check Paring check failed".to_string(),
+        });
+      }
+
+      {
+        //ll + \zeta CH == CH, tau
+        let ll = ll + comm_quot_f_x_zeta * zeta;
+        let rl = comm_quot_f_x_zeta;
+        let rr = tau2;
+
+        let pairing_l = E::GE::pairing(&ll.into_inner(), &lr);
+        let pairing_r = E::GE::pairing(&rl.into_inner(), &rr);
+
+        if pairing_l != pairing_r {
+          return Err(NovaError::ProofVerifyError {
+            reason: "alternative: g Check Paring check failed".to_string(),
+          });
+        }
+      }
+    }
+
+    // 4. Check KZG
+    let z = arg.z;
+    let beta = arg.beta;
+    let comm_quot_m = arg.comm_quot_m;
+    let comm_quot_l = arg.comm_quot_l;
+    {
       let g_star = UniPoly::from_evals_with_xs(&[zeta, zeta_inv], &[g_zeta, g_zeta_inv]);
       let h_star =
         UniPoly::from_evals_with_xs(&[zeta, zeta_inv, alpha], &[h_zeta, h_zeta_inv, h_alpha]);
@@ -673,9 +568,6 @@ where
       let z_eval_t_s3 = van_alpha;
       let z_eval_t_s4 = van_zeta_inv * van_alpha;
       let z_eval_t = z_eval_t_s4 * van_zeta;
-
-      let comm_quot_m = arg.comm_quot_m;
-      let comm_quot_l = arg.comm_quot_l;
 
       let beta_2 = beta * beta;
       let beta_3 = beta_2 * beta;
@@ -710,6 +602,48 @@ where
       if pairing_l != pairing_r {
         return Err(NovaError::ProofVerifyError {
           reason: "KZG Pairing check failed".to_string(),
+        });
+      }
+    }
+
+    {
+      // Check FS
+      transcript.absorb(b"f", &[*comm_f, comm_h].to_vec().as_slice());
+      if alpha != transcript.squeeze(b"alpha")? {
+        return Err(NovaError::ProofVerifyError {
+          reason: "alpha sample failed".to_string(),
+        });
+      }
+      transcript.absorb(b"g", &[comm_g, comm_q].to_vec().as_slice());
+      transcript.absorb(b"h_alpha", &h_alpha);
+      if gamma != transcript.squeeze(b"gamma")? {
+        return Err(NovaError::ProofVerifyError {
+          reason: "gamma sample failed".to_string(),
+        });
+      }
+
+      transcript.absorb(b"d", &[comm_s, comm_d].to_vec().as_slice());
+
+      let zeta = transcript.squeeze(b"zeta")?;
+      if zeta != arg.zeta {
+        return Err(NovaError::ProofVerifyError {
+          reason: "zeta sample failed".to_string(),
+        });
+      }
+
+      transcript.absorb(b"quot_f_x_zeta", &[comm_quot_f_x_zeta].to_vec().as_slice());
+
+      if beta != transcript.squeeze(b"beta")? {
+        return Err(NovaError::ProofVerifyError {
+          reason: "beta sample failed".to_string(),
+        });
+      }
+
+      transcript.absorb(b"quot_m", &[comm_quot_m].to_vec().as_slice());
+
+      if z != transcript.squeeze(b"z")? {
+        return Err(NovaError::ProofVerifyError {
+          reason: "z sample failed".to_string(),
         });
       }
     }

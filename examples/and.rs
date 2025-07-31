@@ -18,6 +18,7 @@ use std::time::Instant;
 type E1 = Bn256EngineKZG;
 type E2 = GrumpkinEngine;
 type EE1 = nova_snark::provider::hyperkzg::EvaluationEngine<E1>;
+// type EE1 = nova_snark::provider::mercury::engine::EvaluationEngine<E1>;
 type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<E2>;
 type S1 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E1, EE1>; // non-preprocessing SNARK
 type S2 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E2, EE2>; // non-preprocessing SNARK
