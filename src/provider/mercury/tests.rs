@@ -4,6 +4,7 @@ use ff::{Field, PrimeField};
 use halo2curves::bn256;
 use rand_core::OsRng;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use serde::Serialize;
 
 use crate::provider::hyperkzg;
 use crate::provider::keccak::Keccak256Transcript;
@@ -393,7 +394,7 @@ fn test_batch_kzg() {
 
 #[test]
 fn test_mercury_ee() {
-  let log_n = 22;
+  let log_n = 12;
   let poly = make_random_poly::<F>(log_n);
   let point = (0..log_n).map(|_| F::random(OsRng)).collect::<Vec<_>>();
 

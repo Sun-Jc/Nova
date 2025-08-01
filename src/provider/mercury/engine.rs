@@ -21,6 +21,7 @@ use crate::{
 };
 
 use ff::{Field, PrimeField};
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
 /// Alias to points on G1 that are in preprocessed form
@@ -526,10 +527,67 @@ where
       }
 
       {
-        //ll + \zeta CH == CH, tau
-        let ll = ll + comm_quot_f_x_zeta * zeta;
-        let rl = comm_quot_f_x_zeta;
+        // alternative: ll + \zeta CH == CH, tau
+        let ll1 = ll + comm_quot_f_x_zeta * zeta;
+        let rl1 = comm_quot_f_x_zeta;
         let rr = tau2;
+
+        let z = arg.z;
+        let beta = arg.beta;
+        let comm_quot_m = arg.comm_quot_m;
+        let comm_quot_l = arg.comm_quot_l;
+
+        let g_star = UniPoly::from_evals_with_xs(&[zeta, zeta_inv], &[g_zeta, g_zeta_inv]);
+        let h_star =
+          UniPoly::from_evals_with_xs(&[zeta, zeta_inv, alpha], &[h_zeta, h_zeta_inv, h_alpha]);
+        let s_star = UniPoly::from_evals_with_xs(&[zeta, zeta_inv], &[s_zeta, s_zeta_inv]);
+        let d_star = UniPoly::from_evals_with_xs(&[zeta], &[d_zeta]);
+
+        let g_star_eval = g_star.evaluate(&z);
+        let h_star_eval = h_star.evaluate(&z);
+        let s_star_eval = s_star.evaluate(&z);
+        let d_star_eval = d_star.evaluate(&z);
+
+        let van_zeta = z - zeta;
+        let van_zeta_inv = z - zeta_inv;
+        let van_alpha = z - alpha;
+
+        let z_eval_t_s1 = van_alpha;
+        let z_eval_t_s2 = E::Scalar::ONE;
+        let z_eval_t_s3 = van_alpha;
+        let z_eval_t_s4 = van_zeta_inv * van_alpha;
+        let z_eval_t = z_eval_t_s4 * van_zeta;
+
+        let beta_2 = beta * beta;
+        let beta_3 = beta_2 * beta;
+
+        let mut f = comm_g * z_eval_t_s1;
+
+        f = f + comm_h * (beta * z_eval_t_s2);
+
+        f = f + comm_s * (beta_2 * z_eval_t_s3);
+
+        f = f + comm_d * (beta_3 * z_eval_t_s4);
+
+        f = f + comm_quot_m * (-z_eval_t);
+
+        let scalar = z_eval_t_s1 * g_star_eval
+          + beta * z_eval_t_s2 * h_star_eval
+          + beta_2 * z_eval_t_s3 * s_star_eval
+          + beta_3 * z_eval_t_s4 * d_star_eval;
+
+        f = f + Commitment::new(DlogGroup::group(&vk.g)) * (-scalar);
+
+        let ll2 = f + comm_quot_l * z;
+        let lr = DlogGroup::group(&vk.h);
+
+        let rl2 = comm_quot_l;
+        let rr = DlogGroup::group(&vk.tau_h);
+
+        let d = E::Scalar::random(OsRng);
+
+        let ll = ll1 + ll2 * d;
+        let rl = rl1 + rl2 * d;
 
         let pairing_l = E::GE::pairing(&ll.into_inner(), &lr);
         let pairing_r = E::GE::pairing(&rl.into_inner(), &rr);
