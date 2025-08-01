@@ -394,13 +394,13 @@ fn test_batch_kzg() {
 
 #[test]
 fn test_mercury_ee() {
-  let log_n = 12;
+  let log_n = 11;
   let poly = make_random_poly::<F>(log_n);
   let point = (0..log_n).map(|_| F::random(OsRng)).collect::<Vec<_>>();
 
   let ck = <<E as Engine>::CE as CommitmentEngineTrait<E>>::CommitmentKey::setup_from_rng(
     b"test",
-    1 << (log_n + 1),
+    1 << log_n,
     OsRng,
   );
 

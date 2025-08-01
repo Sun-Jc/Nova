@@ -274,6 +274,9 @@ where
       assert_eq!(f_r, (r.pow([b as u64]) - alpha) * q_r + g_r);
     }
 
+    let mut q_poly = q_poly;
+    q_poly.trim();
+
     let comm_q = E::CE::commit(ck, &q_poly.coeffs, &E::Scalar::ZERO);
     let comm_g = E::CE::commit(ck, &g_poly.coeffs, &E::Scalar::ZERO);
 
