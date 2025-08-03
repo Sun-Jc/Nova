@@ -4,6 +4,7 @@
 pub mod bn256_grumpkin;
 pub mod hyperkzg;
 pub mod ipa_pc;
+pub mod mercury;
 pub mod pasta;
 pub mod poseidon;
 pub mod secp_secq;
@@ -15,8 +16,6 @@ pub(crate) mod keccak;
 pub(crate) mod pedersen;
 pub(crate) mod ptau;
 pub(crate) mod traits;
-
-pub mod mercury;
 
 mod msm;
 

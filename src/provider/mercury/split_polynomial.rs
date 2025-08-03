@@ -12,6 +12,8 @@ pub fn split_polynomial<Scalar: PrimeField>(
 ) -> Vec<UniPoly<Scalar>> {
   let coeffs = transpose_parallel(&polynomial.coeffs, b, b);
 
+  // let coeffs = polynomial.coeffs.clone();
+
   coeffs
     .par_chunks(b)
     .map(|c| UniPoly {
@@ -27,7 +29,7 @@ pub fn divide_by_binomial<Scalar: PrimeField>(
   alpha: &Scalar,
 ) -> (UniPoly<Scalar>, UniPoly<Scalar>) {
   let num_col = split_res.len();
-  let num_row = split_res[0].coeffs.len();
+  let num_row = num_col; // split_res[0].coeffs.len();
 
   let (quotients, remainder_coefficients): (Vec<Vec<Scalar>>, Vec<Scalar>) = split_res
     .into_par_iter()

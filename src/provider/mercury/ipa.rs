@@ -115,6 +115,8 @@ pub fn make_s_polynomial<Scalar: PrimeField>(
     gamma_pow *= gamma;
   });
 
+  // dbg!(&lhs_evals);
+
   // x^{n-1}
   let omega_n_1 = omega::<Scalar>(log_n + 1).pow([n as u64 - 1]);
   let mut x_pow = omega_n_1;
@@ -122,6 +124,8 @@ pub fn make_s_polynomial<Scalar: PrimeField>(
     *v *= x_pow;
     x_pow *= omega_n_1;
   }
+
+  dbg!(&lhs_evals);
 
   let mut coeffs = UniPoly::from_evaluations(lhs_evals).coeffs;
 

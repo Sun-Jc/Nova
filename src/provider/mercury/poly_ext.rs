@@ -136,6 +136,35 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
     Self { coeffs }
   }
 
+  // Only linear or quadratic polynomials are supported
+  // Adapted from `UniPoly::from_evals`
+  pub fn from_evals_with_xs2(xs: &[&Scalar], evals: &[Scalar]) -> Self {
+    if evals.len() == 1 {
+      return Self {
+        coeffs: vec![evals[0]],
+      };
+    }
+
+    assert_eq!(xs.len(), evals.len());
+    let n = evals.len();
+
+    let mut matrix: Vec<Vec<Scalar>> = Vec::with_capacity(n);
+    for i in 0..n {
+      let mut row = Vec::with_capacity(n);
+      let x = xs[i];
+      row.push(Scalar::ONE);
+      row.push(*x);
+      for j in 2..n {
+        row.push(row[j - 1] * x);
+      }
+      row.push(evals[i]);
+      matrix.push(row);
+    }
+
+    let coeffs = gaussian_elimination(&mut matrix);
+    Self { coeffs }
+  }
+
   // prod{ (x - alpha_i) }
   pub fn make_vanishing_poly(alphas: &[Scalar]) -> Self {
     let mut res = Self {
@@ -151,6 +180,16 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
 
   pub fn scale(&mut self, s: &Scalar) {
     self.coeffs.par_iter_mut().for_each(|c| *c *= *s);
+  }
+
+  pub fn add_with(&mut self, polynomials: &[UniPoly<Scalar>], scalars: &[Scalar]) {
+    self.coeffs.par_iter_mut().enumerate().for_each(|(i, c)| {
+      *c += polynomials
+        .par_iter()
+        .zip(scalars.par_iter())
+        .map(|(p, s)| *p.coeffs.get(i).unwrap_or(&Scalar::ZERO) * s)
+        .sum::<Scalar>();
+    });
   }
 }
 

@@ -20,8 +20,11 @@ use crate::{
   },
 };
 
+use rayon::iter::ParallelIterator;
+
 use ff::{Field, PrimeField};
 use rand_core::OsRng;
+use rayon::iter::IntoParallelRefMutIterator;
 use serde::{Deserialize, Serialize};
 
 /// Alias to points on G1 that are in preprocessed form
@@ -97,7 +100,7 @@ where
 // P_u(X) = prod(uiX^{2^i} + 1 - u_i)
 fn make_pu_poly<Scalar: PrimeField>(u: &[Scalar]) -> UniPoly<Scalar> {
   let mut u = u.to_vec();
-  u.reverse();
+  // u.reverse();
 
   let evals = EqPolynomial::new(u).evals();
 
@@ -106,7 +109,7 @@ fn make_pu_poly<Scalar: PrimeField>(u: &[Scalar]) -> UniPoly<Scalar> {
 
 fn eval_pu_poly<Scalar: PrimeField>(u: &[Scalar], r: &Scalar) -> Scalar {
   let mut res = Scalar::ONE;
-  for (i, u_i) in u.iter().enumerate() {
+  for (i, u_i) in u.iter().rev().enumerate() {
     res *= *u_i * r.pow([1 << i]) + Scalar::ONE - u_i;
   }
   res
@@ -147,10 +150,10 @@ where
   ) -> Result<Self::EvaluationArgument, NovaError> {
     let comm_f = comm;
 
-    let point = point.to_vec();
-
     let mut point = point.to_vec();
-    point.reverse();
+
+    // let mut point = point.to_vec();
+    // point.reverse();
 
     let (f_poly, log_n, b, point_l, point_r) = {
       // Round 0: Prepare
@@ -175,11 +178,20 @@ where
       (f, log_n, b, point_l.to_vec(), point_r.to_vec())
     };
 
-    let p_poly1 = make_pu_poly(&point_l);
-    let p_poly2 = make_pu_poly(&point_r);
+    let (point_row, point_col) = (point_l.to_vec(), point_r.to_vec());
 
-    assert_eq!(p_poly1.coeffs.len(), b);
-    assert_eq!(p_poly2.coeffs.len(), b);
+    // for i in 0..b {
+    //   for j in 0..b {
+    //     print!("{:?} ", f_poly.coeffs[i * b + j]);
+    //   }
+    //   println!();
+    // }
+
+    let p_poly_col = make_pu_poly(&point_col);
+    let p_poly_row = make_pu_poly(&point_row);
+
+    assert_eq!(p_poly_col.coeffs.len(), b);
+    assert_eq!(p_poly_row.coeffs.len(), b);
 
     #[cfg(debug_assertions)]
     {
@@ -187,34 +199,43 @@ where
       use rand_core::OsRng;
 
       let r = E::Scalar::random(OsRng);
-      let pu1_eval_expected = eval_pu_poly(&point_l, &r);
-      let pu2_eval_expected = eval_pu_poly(&point_r, &r);
+      let pu1_eval_expected = eval_pu_poly(&point_col, &r);
+      let pu2_eval_expected = eval_pu_poly(&point_row, &r);
 
-      let pu1_eval_actual = p_poly1.evaluate(&r);
-      let pu2_eval_actual = p_poly2.evaluate(&r);
+      let pu1_eval_actual = p_poly_col.evaluate(&r);
+      let pu2_eval_actual = p_poly_row.evaluate(&r);
 
       assert_eq!(pu1_eval_expected, pu1_eval_actual);
       assert_eq!(pu2_eval_expected, pu2_eval_actual);
     }
 
-    let h_poly = {
-      let mut coeffs = vec![E::Scalar::ZERO; b];
+    let mut f_col_sub_poly = split_polynomial(&f_poly, b);
 
-      for (j, coeff) in coeffs.iter_mut().enumerate() {
-        for (i, eq_eval) in p_poly1.coeffs.iter().enumerate().take(b) {
-          *coeff += f_poly.coeffs[j * b + i] * eq_eval;
-        }
-      }
-      UniPoly { coeffs }
+    // println!("f_col_sub_poly");
+    // for i in 0..b {
+    //   println!("{:?} ", f_col_sub_poly[i].coeffs);
+    // }
+
+    f_col_sub_poly.par_iter_mut().for_each(|f| f.trim());
+
+    let h_poly = {
+      let (res, other) = f_col_sub_poly.split_first().unwrap();
+      let mut res = res.to_owned();
+      res.scale(&p_poly_col.coeffs[0]);
+      let other = other.to_owned();
+
+      res.add_with(&other, &p_poly_col.coeffs[1..]);
+
+      res
     };
 
     #[cfg(debug_assertions)]
     {
       // Check h, eq_evals2 ipa vs eval
 
-      let eq_evals2 = p_poly2.coeffs.clone();
+      let eq_evals2 = p_poly_row.coeffs.clone();
 
-      assert_eq!(eq_evals2.len(), h_poly.coeffs.len());
+      // assert_eq!(eq_evals2.len(), h_poly.coeffs.len());
 
       let ip = eq_evals2
         .iter()
@@ -232,10 +253,8 @@ where
 
     // Get q(X) and g(X)
     let (q_poly, g_poly) = {
-      let f_col_sub_poly = split_polynomial(&f_poly, b);
-
       assert_eq!(f_col_sub_poly.len(), b);
-      assert_eq!(f_col_sub_poly[0].coeffs.len(), b);
+      // assert_eq!(f_col_sub_poly[0].coeffs.len(), b);
 
       divide_by_binomial(&f_col_sub_poly, &alpha)
     };
@@ -245,7 +264,7 @@ where
     #[cfg(debug_assertions)]
     {
       // Check g
-      let f_col_sub_poly = split_polynomial(&f_poly, b);
+      // let f_col_sub_poly = split_polynomial(&f_poly, b);
       let f_alphas = f_col_sub_poly
         .iter()
         .map(|p| p.evaluate(&alpha))
@@ -287,7 +306,7 @@ where
     #[cfg(debug_assertions)]
     {
       // Check g eq_evals1 ipa vs h_alpha
-      let ip = p_poly1
+      let ip = p_poly_col
         .coeffs
         .iter()
         .zip(g_poly.coeffs.iter())
@@ -303,11 +322,11 @@ where
 
     // Get s(X) for ipa
     let s_poly = {
-      let left_polys = vec![p_poly1.clone(), p_poly2.clone()];
+      let left_polys = vec![p_poly_col.clone(), p_poly_row.clone()];
       let right_polys = vec![g_poly.clone(), h_poly.clone()];
 
-      assert_eq!(p_poly1.coeffs.len(), g_poly.coeffs.len());
-      assert_eq!(p_poly2.coeffs.len(), h_poly.coeffs.len());
+      assert_eq!(p_poly_col.coeffs.len(), g_poly.coeffs.len());
+      // assert_eq!(p_poly2.coeffs.len(), h_poly.coeffs.len());
 
       make_s_polynomial(left_polys, right_polys, log_n as u32 / 2, &gamma)
     };
@@ -324,10 +343,10 @@ where
       let g_r_inv = g_poly.evaluate(&r_inv);
       let h_r = h_poly.evaluate(&r);
       let h_r_inv = h_poly.evaluate(&r_inv);
-      let pu1_r = eval_pu_poly(&point_l, &r);
-      let pu1_r_inv = eval_pu_poly(&point_l, &r_inv);
-      let pu2_r = eval_pu_poly(&point_r, &r);
-      let pu2_r_inv = eval_pu_poly(&point_r, &r_inv);
+      let pu1_r = eval_pu_poly(&point_col, &r);
+      let pu1_r_inv = eval_pu_poly(&point_col, &r_inv);
+      let pu2_r = eval_pu_poly(&point_row, &r);
+      let pu2_r_inv = eval_pu_poly(&point_row, &r_inv);
 
       let s_r = s_poly.evaluate(&r);
       let s_r_inv = s_poly.evaluate(&r_inv);
@@ -438,7 +457,7 @@ where
     arg: &Self::EvaluationArgument,
   ) -> Result<(), NovaError> {
     let mut point = point.to_vec();
-    point.reverse();
+    // point.reverse();
 
     let mut log_n = point.len();
     if log_n % 2 != 0 {
@@ -448,7 +467,7 @@ where
     }
 
     let (point_l, point_r) = point.split_at(log_n / 2);
-    let (point_l, point_r) = (point_l.to_vec(), point_r.to_vec());
+    let (point_r, point_l) = (point_l.to_vec(), point_r.to_vec());
 
     let zeta = arg.zeta;
     let zeta_inv = zeta.invert().unwrap();
