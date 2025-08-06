@@ -13,7 +13,7 @@
 // main APIs exposed by this library
 pub mod nova;
 
-#[cfg(feature = "experimental")]
+// #[cfg(feature = "experimental")]
 pub mod neutron;
 
 // public modules

@@ -7,6 +7,7 @@ pub mod ipa_pc;
 pub mod mercury;
 pub mod pasta;
 pub mod poseidon;
+pub mod samaritan;
 pub mod secp_secq;
 
 // crate-private modules

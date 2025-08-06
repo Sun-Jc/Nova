@@ -8,19 +8,25 @@ use nova_snark::{
   frontend::{
     num::AllocatedNum, AllocatedBit, ConstraintSystem, LinearCombination, SynthesisError,
   },
-  nova::{CompressedSNARK, PublicParams, RecursiveSNARK},
+  // nova::{CompressedSNARK, PublicParams, RecursiveSNARK},
+  neutron::{PublicParams, RecursiveSNARK},
   provider::{Bn256EngineKZG, GrumpkinEngine},
   traits::{circuit::StepCircuit, snark::RelaxedR1CSSNARKTrait, Engine, Group},
 };
 use rand::Rng;
 use std::time::Instant;
 
+// type E1 = Bn256EngineKZG;
+// type E2 = GrumpkinEngine;
+// type EE1 = nova_snark::provider::hyperkzg::EvaluationEngine<E1>;
+// type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<E2>;
+// type S1 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E1, EE1>; // non-preprocessing SNARK
+// type S2 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E2, EE2>; // non-preprocessing SNARK
+
 type E1 = Bn256EngineKZG;
 type E2 = GrumpkinEngine;
-type EE1 = nova_snark::provider::hyperkzg::EvaluationEngine<E1>;
-type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<E2>;
-type S1 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E1, EE1>; // non-preprocessing SNARK
-type S2 = nova_snark::spartan::snark::RelaxedR1CSSNARK<E2, EE2>; // non-preprocessing SNARK
+type EE = nova_snark::provider::hyperkzg::EvaluationEngine<E1>;
+type S = nova_snark::spartan::ppsnark::RelaxedR1CSSNARK<E1, EE>;
 
 #[derive(Clone, Debug)]
 struct AndInstance<G: Group> {
@@ -217,29 +223,29 @@ fn main() {
     println!("Producing public parameters...");
     let pp = PublicParams::<E1, E2, AndCircuit<<E1 as Engine>::GE>>::setup(
       &circuit,
-      &*S1::ck_floor(),
-      &*S2::ck_floor(),
+      &*S::ck_floor(),
+      &|_| 0,
     )
     .unwrap();
     println!("PublicParams::setup, took {:?} ", start.elapsed());
 
-    println!(
-      "Number of constraints per step (primary circuit): {}",
-      pp.num_constraints().0
-    );
-    println!(
-      "Number of constraints per step (secondary circuit): {}",
-      pp.num_constraints().1
-    );
+    // println!(
+    //   "Number of constraints per step (primary circuit): {}",
+    //   pp.num_constraints().0
+    // );
+    // println!(
+    //   "Number of constraints per step (secondary circuit): {}",
+    //   pp.num_constraints().1
+    // );
 
-    println!(
-      "Number of variables per step (primary circuit): {}",
-      pp.num_variables().0
-    );
-    println!(
-      "Number of variables per step (secondary circuit): {}",
-      pp.num_variables().1
-    );
+    // println!(
+    //   "Number of variables per step (primary circuit): {}",
+    //   pp.num_variables().0
+    // );
+    // println!(
+    //   "Number of variables per step (secondary circuit): {}",
+    //   pp.num_variables().1
+    // );
 
     // produce non-deterministic advice
     let circuits = (0..num_steps)
