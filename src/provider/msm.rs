@@ -177,15 +177,176 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
     acc
   };
 
-  if scalars.len() > num_threads {
+  if false && scalars.len() > num_threads {
     let chunk = scalars.len() / num_threads;
     scalars
       .par_chunks(chunk)
       .zip(bases.par_chunks(chunk))
       .map(|(scalars, bases)| process_chunk(scalars, bases))
-      .reduce(C::Curve::identity, |sum, evl| sum + evl)
+      .sum()
   } else {
     process_chunk(scalars, bases)
+  }
+}
+
+#[allow(dead_code)]
+fn msm_binary2<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
+  // let mut points = Vec::with_capacity(scalars.len());
+  // for i in 0..scalars.len() {
+  //   if !scalars[i].is_zero() {
+  //     points.push(bases[i]);
+  //   }
+  // }
+
+  let mut points = bases.to_vec();
+
+  let num_threads = current_num_threads();
+  let process_chunk = |mut ps: &mut [C]| {
+    let mut buffer = vec![C::Base::ONE; ps.len()];
+
+    assert!(ps.len().is_power_of_two());
+
+    batch_add(&mut ps, &mut buffer);
+
+    ps[0].into()
+  };
+
+  if false && scalars.len() > num_threads {
+    let chunk = scalars.len() / num_threads;
+    points
+      .par_chunks_mut(chunk)
+      .map(|ps| process_chunk(ps))
+      .sum()
+  } else {
+    process_chunk(&mut points)
+  }
+}
+
+#[allow(dead_code)]
+fn batch_add<C: CurveAffine>(points: &mut [C], buffer: &mut [C::Base]) {
+  if points.len() == 2 {
+    points[0] = (points[0] + points[1]).into();
+  } else {
+    assert!(points.len().is_power_of_two());
+
+    let n = points.len() / 2;
+
+    // Fill buffer with prod and denom
+
+    let (prod, denoms) = buffer.split_at_mut(n);
+
+    denoms
+      .iter_mut()
+      .take(n)
+      .enumerate()
+      .for_each(|(i, denom)| {
+        *denom = {
+          let p = points[i];
+          let q = points[i + n];
+          let xy_p = p.coordinates().unwrap();
+          let xy_q = q.coordinates().unwrap();
+          let x_p = xy_p.x();
+          let y_p = xy_p.y();
+          let x_q = xy_q.x();
+          // let y_q = xy_q.y();
+          if x_q == x_p {
+            *y_p + *y_p
+          } else {
+            *x_q - *x_p
+          }
+        };
+      });
+
+    let mut acc = C::Base::ONE;
+    for i in 0..n {
+      prod[i] = acc;
+      acc *= denoms[i];
+    }
+
+    acc = acc.invert().unwrap();
+
+    // Add Each Pair
+    let (ps, qs) = points.split_at_mut(points.len() / 2);
+
+    for id in (0..n).rev() {
+      let xy_p = ps[id].coordinates().unwrap();
+      let xy_q = qs[id].coordinates().unwrap();
+      let x_p = xy_p.x();
+      let y_p = xy_p.y();
+      let x_q = xy_q.x();
+      let y_q = xy_q.y();
+
+      let k = {
+        let denom = denoms[id];
+        let prod = prod[id];
+
+        let nom = if x_q != x_p {
+          *y_q - *y_p
+        } else {
+          let x_p_sq = x_p.square();
+          x_p_sq + x_p_sq + x_p_sq + C::a()
+        };
+
+        let tmp = acc * denom;
+        let inv = prod * acc;
+        acc = tmp;
+
+        debug_assert_eq!(inv, denom.invert().unwrap());
+
+        inv * nom
+      };
+
+      let k_sq = k.square();
+
+      let x_res = k_sq - x_p - x_q;
+      let y_res = k * (*x_p - x_res) - y_p;
+
+      ps[id] = C::from_xy(x_res, y_res).unwrap();
+    }
+
+    batch_add(ps, buffer);
+  }
+}
+
+#[cfg(test)]
+mod tests2 {
+  use std::time::Instant;
+
+  use rayon::iter::IntoParallelIterator;
+  use rayon::iter::ParallelIterator;
+
+  use super::*;
+  use rand_core::OsRng;
+
+  type C = halo2curves::bn256::G1Affine;
+
+  #[test]
+  fn test_batch_add() {
+    let log_n = 15;
+
+    // let num_threads = current_num_threads();
+
+    let n = 1 << log_n;
+    // let n = n * num_threads;
+
+    let points = (0..n)
+      .into_par_iter()
+      .map(|_| C::random(OsRng))
+      .collect::<Vec<_>>();
+
+    let scalars = vec![1; n];
+
+    let start = Instant::now();
+    let res1 = msm_binary(&scalars, &points);
+    let dur1 = start.elapsed();
+    println!("msm_binary: {:?}", dur1);
+
+    let start = Instant::now();
+    let res2 = msm_binary2(&scalars, &points);
+    let dur2 = start.elapsed();
+    println!("msm_binary2: {:?}", dur2);
+
+    assert_eq!(res1, res2);
   }
 }
 
