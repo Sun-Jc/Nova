@@ -201,12 +201,15 @@ fn msm_binary2<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) ->
   let mut points = bases.to_vec();
 
   let num_threads = current_num_threads();
-  let process_chunk = |mut ps: &mut [C]| {
+  let process_chunk = |ps: &mut [C]| {
     let mut buffer = vec![C::Base::ONE; ps.len()];
 
-    assert!(ps.len().is_power_of_two());
+    let mut n = ps.len();
 
-    batch_add(&mut ps, &mut buffer);
+    while n > 1 {
+      batch_add(&mut ps[..n], &mut buffer[..n]);
+      n = n / 2;
+    }
 
     ps[0].into()
   };
@@ -303,8 +306,6 @@ fn batch_add<C: CurveAffine>(points: &mut [C], buffer: &mut [C::Base]) {
 
       ps[id] = C::from_xy(x_res, y_res).unwrap();
     }
-
-    batch_add(ps, buffer);
   }
 }
 
