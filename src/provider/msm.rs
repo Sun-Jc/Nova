@@ -2,7 +2,7 @@
 //! The generic implementation is adapted from halo2; we add an optimization to commit to bits more efficiently
 //! The specialized implementations are adapted from jolt, with additional optimizations and parallelization.
 use ff::{Field, PrimeField};
-use halo2curves::{group::Group, CurveAffine};
+use halo2curves::{bn256, group::Group, CurveAffine};
 use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 use rayon::{current_num_threads, prelude::*};
@@ -177,7 +177,7 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
     acc
   };
 
-  if false && scalars.len() > num_threads {
+  if scalars.len() > num_threads {
     let chunk = scalars.len() / num_threads;
     scalars
       .par_chunks(chunk)
@@ -190,31 +190,50 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
 }
 
 #[allow(dead_code)]
-fn msm_binary2<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
-  // let mut points = Vec::with_capacity(scalars.len());
-  // for i in 0..scalars.len() {
-  //   if !scalars[i].is_zero() {
-  //     points.push(bases[i]);
-  //   }
-  // }
+fn msm_binary_bn254<T: Integer + Sync>(scalars: &[T], bases: &[bn256::G1Affine]) -> bn256::G1 {
+  type Curve = bn256::G1;
+  let mut points = Vec::with_capacity(scalars.len());
+  for i in 0..scalars.len() {
+    if !scalars[i].is_zero() {
+      points.push(Curve {
+        x: bases[i].x,
+        y: bases[i].y,
+        z: Base::ONE,
+      });
+    }
+  }
 
-  let mut points = bases.to_vec();
+  type C = bn256::G1Affine;
+  type Base = bn256::Fq;
+
+  const N: usize = 1 << 5;
 
   let num_threads = current_num_threads();
-  let process_chunk = |ps: &mut [C]| {
-    let mut buffer = vec![C::Base::ONE; ps.len()];
-
+  let process_chunk = |ps: &mut [Curve]| {
     let mut n = ps.len();
 
-    while n > 1 {
-      batch_add(&mut ps[..n], &mut buffer[..n]);
-      n = n / 2;
+    // assert!(n.is_power_of_two());
+
+    let mut buffer_denom = vec![Base::ONE; n / 2];
+    let mut buffer_prod = vec![Base::ONE; n / 2];
+
+    while n > 2 {
+      let n_next = n / 2;
+
+      batch_add_bn254(ps, &mut buffer_denom, &mut buffer_prod, n_next);
+
+      if n % 2 == 1 {
+        assert_eq!(n - 1, n_next * 2);
+        ps[0] = ps[0] + ps[n - 1];
+      }
+
+      n = n_next;
     }
 
-    ps[0].into()
+    ps.iter().take(n).sum()
   };
 
-  if false && scalars.len() > num_threads {
+  if scalars.len() > num_threads {
     let chunk = scalars.len() / num_threads;
     points
       .par_chunks_mut(chunk)
@@ -226,86 +245,93 @@ fn msm_binary2<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) ->
 }
 
 #[allow(dead_code)]
-fn batch_add<C: CurveAffine>(points: &mut [C], buffer: &mut [C::Base]) {
-  if points.len() == 2 {
+#[inline(always)]
+fn batch_add_bn254(
+  points: &mut [bn256::G1],
+  buffer_denom: &mut [bn256::Fq],
+  buffer_prod: &mut [bn256::Fq],
+  n: usize,
+) {
+  type Base = bn256::Fq;
+  type Curve = bn256::G1;
+
+  if n == 1 {
     points[0] = (points[0] + points[1]).into();
   } else {
-    assert!(points.len().is_power_of_two());
-
-    let n = points.len() / 2;
-
     // Fill buffer with prod and denom
 
-    let (prod, denoms) = buffer.split_at_mut(n);
-
-    denoms
+    // * INTOTAL
+    // * 6 F-ADD
+    // * 4 F-MUL
+    // * 1 F-SQR
+    let mut acc = Base::ONE;
+    buffer_prod
       .iter_mut()
       .take(n)
-      .enumerate()
-      .for_each(|(i, denom)| {
-        *denom = {
-          let p = points[i];
-          let q = points[i + n];
-          let xy_p = p.coordinates().unwrap();
-          let xy_q = q.coordinates().unwrap();
-          let x_p = xy_p.x();
-          let y_p = xy_p.y();
-          let x_q = xy_q.x();
-          // let y_q = xy_q.y();
-          if x_q == x_p {
-            *y_p + *y_p
-          } else {
-            *x_q - *x_p
-          }
-        };
+      .zip(buffer_denom.iter_mut())
+      .zip(points.iter())
+      .zip(points.iter().skip(n))
+      .for_each(|(((prod, denom), p), q)| {
+        // * 1 F-ADD
+        *denom = if p.x == q.x { p.y.double() } else { q.x - p.x };
+        *prod = acc;
+
+        // * 1 F-MUL
+        acc *= *denom;
       });
 
-    let mut acc = C::Base::ONE;
-    for i in 0..n {
-      prod[i] = acc;
-      acc *= denoms[i];
-    }
-
+    // * IGNORED
     acc = acc.invert().unwrap();
 
     // Add Each Pair
-    let (ps, qs) = points.split_at_mut(points.len() / 2);
+    let (ps, qs) = points[..n * 2].split_at_mut(n);
 
-    for id in (0..n).rev() {
-      let xy_p = ps[id].coordinates().unwrap();
-      let xy_q = qs[id].coordinates().unwrap();
-      let x_p = xy_p.x();
-      let y_p = xy_p.y();
-      let x_q = xy_q.x();
-      let y_q = xy_q.y();
+    assert_eq!(ps.len(), qs.len());
+    assert_eq!(ps.len(), n);
 
-      let k = {
-        let denom = denoms[id];
-        let prod = prod[id];
+    buffer_prod
+      .iter()
+      .take(n)
+      .rev()
+      .zip(buffer_denom.iter().take(n).rev())
+      .zip(ps.iter_mut().rev())
+      .zip(qs.iter().rev())
+      .for_each(|(((prod, denom), p), q)| {
+        let x_p = p.x;
+        let y_p = p.y;
+        let x_q = q.x;
+        let y_q = q.y;
 
+        // * 1 F-ADD
         let nom = if x_q != x_p {
-          *y_q - *y_p
+          y_q - y_p
         } else {
           let x_p_sq = x_p.square();
-          x_p_sq + x_p_sq + x_p_sq + C::a()
+          x_p_sq.double() + x_p_sq //+ C::a()
         };
 
+        // * 2 F-MUL
         let tmp = acc * denom;
         let inv = prod * acc;
         acc = tmp;
 
-        debug_assert_eq!(inv, denom.invert().unwrap());
+        // * 1 F-MUL
+        let k = inv * nom;
 
-        inv * nom
-      };
+        // * 1 F-SQR
+        let k_sq = k.square();
 
-      let k_sq = k.square();
+        // * 4 F-ADD
+        // * 1 F-MUL
+        let x_res = k_sq - (x_p + x_q);
+        let y_res = k * (x_p - x_res) - y_p;
 
-      let x_res = k_sq - x_p - x_q;
-      let y_res = k * (*x_p - x_res) - y_p;
-
-      ps[id] = C::from_xy(x_res, y_res).unwrap();
-    }
+        *p = Curve {
+          x: x_res,
+          y: y_res,
+          z: Base::ONE,
+        };
+      });
   }
 }
 
@@ -316,6 +342,8 @@ mod tests2 {
   use rayon::iter::IntoParallelIterator;
   use rayon::iter::ParallelIterator;
 
+  use crate::provider::traits::DlogGroup;
+
   use super::*;
   use rand_core::OsRng;
 
@@ -325,10 +353,10 @@ mod tests2 {
   fn test_batch_add() {
     let log_n = 15;
 
-    // let num_threads = current_num_threads();
+    let num_threads = current_num_threads();
 
     let n = 1 << log_n;
-    // let n = n * num_threads;
+    let n = n * num_threads;
 
     let points = (0..n)
       .into_par_iter()
@@ -343,11 +371,11 @@ mod tests2 {
     println!("msm_binary: {:?}", dur1);
 
     let start = Instant::now();
-    let res2 = msm_binary2(&scalars, &points);
+    let res2 = msm_binary_bn254(&scalars, &points);
     let dur2 = start.elapsed();
     println!("msm_binary2: {:?}", dur2);
 
-    assert_eq!(res1, res2);
+    assert_eq!(res1.affine(), res2.affine());
   }
 }
 
