@@ -12,9 +12,9 @@ use crate::{
   },
   r1cs::{CommitmentKeyHint, R1CSInstance, R1CSWitness},
   traits::{
-    circuit::StepCircuit, AbsorbInRO2Trait, Engine, RO2Constants, RO2ConstantsCircuit, ROTrait,
+    circuit::StepCircuit, commitment::CommitmentEngineTrait, snark::RelaxedR1CSSNARKTrait, AbsorbInRO2Trait, Engine, RO2Constants, RO2ConstantsCircuit, ROTrait,
   },
-  CommitmentKey,
+  CommitmentKey, DerandKey,
 };
 use core::marker::PhantomData;
 use ff::Field;
@@ -155,6 +155,16 @@ where
       .get_or_try_init(|| DigestComputer::new(self).digest())
       .cloned()
       .expect("Failure in retrieving digest")
+  }
+
+  /// Returns the number of constraints in the primary circuit
+  pub const fn num_constraints(&self) -> usize {
+    self.structure.S.num_cons
+  }
+
+  /// Returns the number of variables in the primary circuit
+  pub const fn num_variables(&self) -> usize {
+    self.structure.S.num_vars
   }
 }
 
@@ -373,6 +383,218 @@ where
   /// The number of steps which have been executed thus far.
   pub fn num_steps(&self) -> usize {
     self.i
+  }
+}
+
+/// A type that holds the prover key for `CompressedSNARK`
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct ProverKey<E1, E2, C, S1>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C: StepCircuit<E1::Scalar>,
+  S1: RelaxedR1CSSNARKTrait<E1>,
+{
+  pk_primary: S1::ProverKey,
+  _p: PhantomData<(C, E2)>,
+}
+
+/// A type that holds the verifier key for `CompressedSNARK`
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct VerifierKey<E1, E2, C, S1>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C: StepCircuit<E1::Scalar>,
+  S1: RelaxedR1CSSNARKTrait<E1>,
+{
+  F_arity: usize,
+  ro_consts: RO2Constants<E1>,
+  pp_digest: E1::Scalar,
+  vk_primary: S1::VerifierKey,
+  dk_primary: DerandKey<E1>,
+  _p: PhantomData<(C, E2)>,
+}
+
+/// A SNARK that proves the knowledge of a valid `RecursiveSNARK`
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct CompressedSNARK<E1, E2, C, S1>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C: StepCircuit<E1::Scalar>,
+  S1: RelaxedR1CSSNARKTrait<E1>,
+{
+  // Current folded state
+  r_U: FoldedInstance<E1>,
+  ri: E1::Scalar,
+
+  // Last instance and folding proof
+  l_u: R1CSInstance<E1>,
+  nifs_Uf: NIFS<E1>,
+
+  // Derandomization data
+  wit_blind_r_Wn: E1::Scalar,
+  err_blind_r_Wn: E1::Scalar,
+
+  // Final SNARK proof
+  snark: S1,
+
+  zn: Vec<E1::Scalar>,
+  _p: PhantomData<(C, E2)>,
+}
+
+impl<E1, E2, C, S1> CompressedSNARK<E1, E2, C, S1>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C: StepCircuit<E1::Scalar>,
+  S1: RelaxedR1CSSNARKTrait<E1>,
+{
+  /// Creates prover and verifier keys for `CompressedSNARK`
+  pub fn setup(
+    pp: &PublicParams<E1, E2, C>,
+  ) -> Result<(ProverKey<E1, E2, C, S1>, VerifierKey<E1, E2, C, S1>), NovaError> {
+    let (pk_primary, vk_primary) = S1::setup(&pp.ck, &pp.structure.S)?;
+
+    let pk = ProverKey {
+      pk_primary,
+      _p: Default::default(),
+    };
+
+    let vk = VerifierKey {
+      F_arity: pp.F_arity,
+      ro_consts: pp.ro_consts.clone(),
+      pp_digest: pp.digest(),
+      vk_primary,
+      dk_primary: E1::CE::derand_key(&pp.ck),
+      _p: Default::default(),
+    };
+
+    Ok((pk, vk))
+  }
+
+  /// Create a new `CompressedSNARK` (provides zero-knowledge)
+  pub fn prove(
+    pp: &PublicParams<E1, E2, C>,
+    pk: &ProverKey<E1, E2, C, S1>,
+    recursive_snark: &RecursiveSNARK<E1, E2, C>,
+  ) -> Result<Self, NovaError> {
+    // Single folding: fold current r_U/r_W with last l_u/l_w to get Uf/Wf
+    let (nifs_Uf, (r_Uf, r_Wf)) = NIFS::prove(
+      &pp.ck,
+      &pp.ro_consts,
+      &pp.digest(),
+      &pp.structure,
+      &recursive_snark.r_U,
+      &recursive_snark.r_W,
+      &recursive_snark.l_u,
+      &recursive_snark.l_w,
+    )?;
+
+    // Derandomize/unblind commitments
+    let (derandom_r_Wf, wit_blind_r_Wn, err_blind_r_Wn) = r_Wf.derandomize();
+    let derandom_r_Uf = r_Uf.derandomize(
+      &E1::CE::derand_key(&pp.ck),
+      &wit_blind_r_Wn,
+      &err_blind_r_Wn,
+    );
+
+    // Convert to RelaxedR1CS types for SNARK
+    let relaxed_uf = derandom_r_Uf.to_relaxed_instance();
+    let relaxed_wf = derandom_r_Wf.to_relaxed_witness();
+
+    // Create SNARK proving the knowledge of Wf
+    let snark = S1::prove(
+      &pp.ck,
+      &pk.pk_primary,
+      &pp.structure.S,
+      &relaxed_uf,
+      &relaxed_wf,
+    )?;
+
+    Ok(Self {
+      r_U: recursive_snark.r_U.clone(),
+      ri: recursive_snark.ri,
+      l_u: recursive_snark.l_u.clone(),
+      nifs_Uf: nifs_Uf.clone(),
+      wit_blind_r_Wn,
+      err_blind_r_Wn,
+      snark,
+      zn: recursive_snark.zi.clone(),
+      _p: Default::default(),
+    })
+  }
+
+  /// Verify the correctness of the `CompressedSNARK` (provides zero-knowledge)
+  pub fn verify(
+    &self,
+    vk: &VerifierKey<E1, E2, C, S1>,
+    num_steps: usize,
+    z0: &[E1::Scalar],
+  ) -> Result<Vec<E1::Scalar>, NovaError> {
+    // the number of steps cannot be zero
+    if num_steps == 0 {
+      return Err(NovaError::ProofVerifyError {
+        reason: "Number of steps cannot be zero".to_string(),
+      });
+    }
+
+    // check if the (relaxed) R1CS instances have single public output (Neutron uses 1 not 2)
+    if self.l_u.X.len() != 1 || self.r_U.X.len() != 1 {
+      return Err(NovaError::ProofVerifyError {
+        reason: "Invalid number of outputs in R1CS instances".to_string(),
+      });
+    }
+
+    // check if the output hashes in R1CS instances point to the right running instances
+    let hash = {
+      let mut hasher = E1::RO2::new(vk.ro_consts.clone());
+      hasher.absorb(vk.pp_digest);
+      hasher.absorb(E1::Scalar::from(num_steps as u64));
+      for e in z0 {
+        hasher.absorb(*e);
+      }
+      for e in &self.zn {
+        hasher.absorb(*e);
+      }
+      self.r_U.absorb_in_ro2(&mut hasher);
+      hasher.absorb(self.ri);
+
+      hasher.squeeze(NUM_HASH_BITS)
+    };
+
+    if hash != self.l_u.X[0] {
+      return Err(NovaError::ProofVerifyError {
+        reason: "Invalid output hash in R1CS instance".to_string(),
+      });
+    }
+
+    // Single folding verification: fold r_U with l_u to get r_Uf  
+    let r_Uf = self.nifs_Uf.verify(
+      &vk.ro_consts,
+      &vk.pp_digest,
+      &self.r_U,
+      &self.l_u,
+    )?;
+
+    // Derandomize/unblind commitments
+    let derandom_r_Uf = r_Uf.derandomize(
+      &vk.dk_primary,
+      &self.wit_blind_r_Wn,
+      &self.err_blind_r_Wn,
+    );
+
+    // Convert to RelaxedR1CS type for SNARK verification
+    let relaxed_uf = derandom_r_Uf.to_relaxed_instance();
+
+    // Check the satisfiability of the folded instance using SNARK
+    self.snark.verify(&vk.vk_primary, &relaxed_uf)?;
+
+    Ok(self.zn.clone())
   }
 }
 

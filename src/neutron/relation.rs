@@ -1,12 +1,13 @@
 //! This module defines relations used in the Neutron folding scheme
 use crate::{
   errors::NovaError,
-  r1cs::{R1CSInstance, R1CSShape, R1CSWitness},
+  r1cs::{R1CSInstance, R1CSShape, R1CSWitness, RelaxedR1CSInstance, RelaxedR1CSWitness},
   spartan::math::Math,
   traits::{commitment::CommitmentEngineTrait, AbsorbInRO2Trait, Engine, ROTrait},
-  Commitment, CommitmentKey,
+  Commitment, CommitmentKey, DerandKey, CE,
 };
 use ff::Field;
+use rand_core::OsRng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -29,11 +30,11 @@ pub struct Structure<E: Engine> {
 pub struct FoldedWitness<E: Engine> {
   /// Running witness of the main relation
   pub(crate) W: Vec<E::Scalar>,
-  r_W: E::Scalar,
+  pub(crate) r_W: E::Scalar,
 
   /// eq polynomial in tensor form
   pub(crate) E: Vec<E::Scalar>,
-  r_E: E::Scalar,
+  pub(crate) r_E: E::Scalar,
 }
 
 /// A type that holds instance information for a zero-fold relation
@@ -65,6 +66,87 @@ impl<E: Engine> Structure<E> {
       left: 1 << ell1,
       right: 1 << ell2,
     }
+  }
+
+  /// Samples a new random `R1CSInstance`/`R1CSWitness` pair for use in NIFS folding
+  pub fn sample_random_r1cs_instance_witness(
+    &self,
+    ck: &CommitmentKey<E>,
+  ) -> Result<(R1CSInstance<E>, R1CSWitness<E>), NovaError> {
+    // Use the underlying R1CSShape's method to get RelaxedR1CS types
+    let (relaxed_u, relaxed_w) = self.S.sample_random_instance_witness(ck)?;
+    
+    // Convert RelaxedR1CS to R1CS (this works because they're random instances with u=1)
+    let u = R1CSInstance {
+      comm_W: relaxed_u.comm_W,
+      X: relaxed_u.X,
+    };
+    let w = R1CSWitness {
+      W: relaxed_w.W,
+      r_W: relaxed_w.r_W,
+    };
+    
+    Ok((u, w))
+  }
+
+  /// Samples a new random `FoldedInstance`/`FoldedWitness` pair 
+  pub fn sample_random_instance_witness(
+    &self,
+    ck: &CommitmentKey<E>,
+  ) -> Result<(FoldedInstance<E>, FoldedWitness<E>), NovaError> {
+    // sample Z = (W, u, X)
+    let Z = (0..self.S.num_vars + self.S.num_io + 1)
+      .into_par_iter()
+      .map(|_| E::Scalar::random(&mut OsRng))
+      .collect::<Vec<E::Scalar>>();
+
+    let r_W = E::Scalar::random(&mut OsRng);
+    let r_E = E::Scalar::random(&mut OsRng);
+
+    let u = Z[self.S.num_vars];
+
+    // compute E <- AZ o BZ - u * CZ
+    let (AZ, BZ, CZ) = self.S.multiply_vec(&Z)?;
+
+    let E = AZ
+      .par_iter()
+      .zip(BZ.par_iter())
+      .zip(CZ.par_iter())
+      .map(|((az, bz), cz)| *az * *bz - u * *cz)
+      .collect::<Vec<E::Scalar>>();
+
+    // Pad E to left + right size (Neutron uses different E structure than Nova)
+    let mut E_padded = vec![E::Scalar::ZERO; self.left + self.right];
+    for (i, &e) in E.iter().enumerate() {
+      if i < E_padded.len() {
+        E_padded[i] = e;
+      }
+    }
+
+    // compute commitments to W,E in parallel
+    let (comm_W, comm_E) = rayon::join(
+      || CE::<E>::commit(ck, &Z[..self.S.num_vars], &r_W),
+      || CE::<E>::commit(ck, &E_padded, &r_E),
+    );
+
+    // Compute T = sum(E) (simplification for random instance)
+    let T = E_padded.iter().fold(E::Scalar::ZERO, |acc, &e| acc + e);
+
+    Ok((
+      FoldedInstance {
+        comm_W,
+        comm_E,
+        T,
+        u,
+        X: Z[self.S.num_vars + 1..].to_vec(),
+      },
+      FoldedWitness {
+        W: Z[..self.S.num_vars].to_vec(),
+        r_W,
+        E: E_padded,
+        r_E,
+      },
+    ))
   }
 
   /// Check if the witness is satisfying
@@ -129,6 +211,30 @@ impl<E: Engine> FoldedWitness<E> {
     }
   }
 
+  /// Derandomize the witness by returning a witness with zero randomness and the randomness values
+  pub fn derandomize(&self) -> (Self, E::Scalar, E::Scalar) {
+    (
+      FoldedWitness {
+        W: self.W.clone(),
+        r_W: E::Scalar::ZERO,
+        E: self.E.clone(),
+        r_E: E::Scalar::ZERO,
+      },
+      self.r_W,
+      self.r_E,
+    )
+  }
+
+  /// Convert to a RelaxedR1CSWitness for use with SNARKs
+  pub fn to_relaxed_witness(&self) -> RelaxedR1CSWitness<E> {
+    RelaxedR1CSWitness {
+      W: self.W.clone(),
+      r_W: self.r_W,
+      E: self.E.clone(),
+      r_E: self.r_E,
+    }
+  }
+
   /// Fold the witness with another witness
   pub fn fold(
     &self,
@@ -167,6 +273,32 @@ impl<E: Engine> FoldedInstance<E> {
       T: E::Scalar::ZERO,
       u: E::Scalar::ZERO,
       X: vec![E::Scalar::ZERO; S.S.num_io],
+    }
+  }
+
+  /// Derandomize the instance using the derand key and randomness values
+  pub fn derandomize(
+    &self,
+    dk: &DerandKey<E>,
+    r_W: &E::Scalar,
+    r_E: &E::Scalar,
+  ) -> FoldedInstance<E> {
+    FoldedInstance {
+      comm_W: CE::<E>::derandomize(dk, &self.comm_W, r_W),
+      comm_E: CE::<E>::derandomize(dk, &self.comm_E, r_E),
+      T: self.T,
+      u: self.u,
+      X: self.X.clone(),
+    }
+  }
+
+  /// Convert to a RelaxedR1CSInstance for use with SNARKs
+  pub fn to_relaxed_instance(&self) -> RelaxedR1CSInstance<E> {
+    RelaxedR1CSInstance {
+      comm_W: self.comm_W,
+      comm_E: self.comm_E,
+      u: self.u,
+      X: self.X.clone(),
     }
   }
 

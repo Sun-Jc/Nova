@@ -293,7 +293,6 @@ impl<E: Engine> NIFS<E> {
   /// and outputs a folded instance `U` with the same shape,
   /// with the guarantee that the folded instance `U`
   /// if and only if `U1` and `U2` are satisfiable.
-  #[cfg(test)]
   pub fn verify(
     &self,
     ro_consts: &RO2Constants<E>,
