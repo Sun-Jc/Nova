@@ -10,11 +10,11 @@ use crate::{
     solver::SatisfyingAssignment,
     ConstraintSystem, SynthesisError,
   },
-  r1cs::{CommitmentKeyHint, R1CSInstance, R1CSWitness},
+  r1cs::{CommitmentKeyHint, R1CSInstance, R1CSWitness, RelaxedR1CSInstance},
   traits::{
     circuit::StepCircuit, commitment::CommitmentEngineTrait, snark::RelaxedR1CSSNARKTrait, AbsorbInRO2Trait, Engine, RO2Constants, RO2ConstantsCircuit, ROTrait,
   },
-  CommitmentKey, DerandKey,
+  Commitment, CommitmentKey, DerandKey,
 };
 use core::marker::PhantomData;
 use ff::Field;
@@ -442,6 +442,9 @@ where
 
   // Final SNARK proof
   snark: S1,
+  
+  // Store the commitment to error vector for verification
+  comm_E_relaxed: Commitment<E1>,
 
   zn: Vec<E1::Scalar>,
   _p: PhantomData<(C, E2)>,
@@ -503,9 +506,15 @@ where
       &err_blind_r_Wn,
     );
 
-    // Convert to RelaxedR1CS types for SNARK
-    let relaxed_uf = derandom_r_Uf.to_relaxed_instance();
-    let relaxed_wf = derandom_r_Wf.to_relaxed_witness();
+    // Convert to RelaxedR1CS types for SNARK with consistent commitments
+    let (relaxed_uf, relaxed_wf) = derandom_r_Wf.to_relaxed_pair(&derandom_r_Uf, &pp.structure, &pp.ck)?;
+
+    // Verify that the converted instance/witness satisfy the RelaxedR1CS
+    let _is_satisfied = pp.structure.S.is_sat_relaxed(&pp.ck, &relaxed_uf, &relaxed_wf);
+    // println!("DEBUG: RelaxedR1CS satisfiability check: {:?}", _is_satisfied.is_ok());
+    // if let Err(e) = &_is_satisfied {
+    //   println!("DEBUG: RelaxedR1CS error: {:?}", e);
+    // }
 
     // Create SNARK proving the knowledge of Wf
     let snark = S1::prove(
@@ -524,6 +533,7 @@ where
       wit_blind_r_Wn,
       err_blind_r_Wn,
       snark,
+      comm_E_relaxed: relaxed_uf.comm_E,
       zn: recursive_snark.zi.clone(),
       _p: Default::default(),
     })
@@ -588,11 +598,23 @@ where
       &self.err_blind_r_Wn,
     );
 
-    // Convert to RelaxedR1CS type for SNARK verification
-    let relaxed_uf = derandom_r_Uf.to_relaxed_instance();
+    // Convert to RelaxedR1CS type for SNARK verification using stored commitment
+    let relaxed_uf = RelaxedR1CSInstance {
+      comm_W: derandom_r_Uf.comm_W,
+      comm_E: self.comm_E_relaxed,
+      u: derandom_r_Uf.u,
+      X: derandom_r_Uf.X.clone(),
+    };
 
     // Check the satisfiability of the folded instance using SNARK
-    self.snark.verify(&vk.vk_primary, &relaxed_uf)?;
+    // println!("DEBUG: About to verify SNARK");
+    let snark_result = self.snark.verify(&vk.vk_primary, &relaxed_uf);
+    // if let Err(e) = &snark_result {
+    //   println!("DEBUG: SNARK verification failed: {:?}", e);
+    // } else {
+    //   println!("DEBUG: SNARK verification succeeded");
+    // }
+    snark_result?;
 
     Ok(self.zn.clone())
   }

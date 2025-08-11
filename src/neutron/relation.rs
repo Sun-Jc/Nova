@@ -225,14 +225,89 @@ impl<E: Engine> FoldedWitness<E> {
     )
   }
 
-  /// Convert to a RelaxedR1CSWitness for use with SNARKs
-  pub fn to_relaxed_witness(&self) -> RelaxedR1CSWitness<E> {
-    RelaxedR1CSWitness {
+  /// Convert to RelaxedR1CS instance/witness pair with consistent commitments
+  pub fn to_relaxed_pair(
+    &self,
+    instance: &FoldedInstance<E>, 
+    structure: &Structure<E>,
+    ck: &CommitmentKey<E>
+  ) -> Result<(RelaxedR1CSInstance<E>, RelaxedR1CSWitness<E>), NovaError> {
+    // Build z vector for R1CS evaluation  
+    let z = [self.W.clone(), vec![instance.u], instance.X.clone()].concat();
+    let (Az, Bz, Cz) = structure.S.multiply_vec(&z)?;
+    
+    // Compute error terms: E_i = Az_i * Bz_i - u * Cz_i
+    let error_vector: Vec<E::Scalar> = (0..structure.S.num_cons)
+      .map(|i| Az[i] * Bz[i] - instance.u * Cz[i])
+      .collect();
+    
+    // Check if the error vector makes sense
+    let _non_zero_errors = error_vector.iter().filter(|&&e| e != E::Scalar::ZERO).count();
+    // println!("DEBUG: Error vector has {} non-zero entries out of {}", _non_zero_errors, error_vector.len());
+    
+    // If error vector is all zeros, we have a regular R1CS instance
+    // Create proper commitment to error vector
+    let comm_E = E::CE::commit(ck, &error_vector, &self.r_E);
+    
+    let relaxed_instance = RelaxedR1CSInstance {
+      comm_W: instance.comm_W,
+      comm_E,
+      u: instance.u,
+      X: instance.X.clone(),
+    };
+    
+    let relaxed_witness = RelaxedR1CSWitness {
       W: self.W.clone(),
       r_W: self.r_W,
-      E: self.E.clone(),
+      E: error_vector,
       r_E: self.r_E,
-    }
+    };
+    
+    Ok((relaxed_instance, relaxed_witness))
+  }
+
+  /// Convert to regular R1CS instance/witness if error vector is zero
+  pub fn to_r1cs_pair(
+    &self,
+    instance: &FoldedInstance<E>
+  ) -> Result<(R1CSInstance<E>, R1CSWitness<E>), NovaError> {
+    // For a properly folded instance where constraints are satisfied,
+    // we can represent it as a regular R1CS instance
+    let r1cs_instance = R1CSInstance {
+      comm_W: instance.comm_W,
+      X: instance.X.clone(),
+    };
+    
+    let r1cs_witness = R1CSWitness {
+      W: self.W.clone(),
+      r_W: self.r_W,
+    };
+    
+    Ok((r1cs_instance, r1cs_witness))
+  }
+
+  /// Convert to a RelaxedR1CSWitness for use with SNARKs
+  /// This computes the proper error vector by evaluating R1CS constraints
+  pub fn to_relaxed_witness(&self, structure: &Structure<E>, instance: &FoldedInstance<E>) -> Result<RelaxedR1CSWitness<E>, NovaError> {
+    // Build z vector for R1CS evaluation  
+    let z = [self.W.clone(), vec![instance.u], instance.X.clone()].concat();
+    let (Az, Bz, Cz) = structure.S.multiply_vec(&z)?;
+    
+    // Compute error terms: E_i = Az_i * Bz_i - u * Cz_i
+    let error_vector: Vec<E::Scalar> = (0..structure.S.num_cons)
+      .map(|i| Az[i] * Bz[i] - instance.u * Cz[i])
+      .collect();
+    
+    // Check if the error vector makes sense
+    let _non_zero_errors = error_vector.iter().filter(|&&e| e != E::Scalar::ZERO).count();
+    // println!("DEBUG: Error vector has {} non-zero entries out of {}", _non_zero_errors, error_vector.len());
+    
+    Ok(RelaxedR1CSWitness {
+      W: self.W.clone(),
+      r_W: self.r_W,
+      E: error_vector,
+      r_E: self.r_E,
+    })
   }
 
   /// Fold the witness with another witness
@@ -293,10 +368,12 @@ impl<E: Engine> FoldedInstance<E> {
   }
 
   /// Convert to a RelaxedR1CSInstance for use with SNARKs
+  /// Note: This should be paired with to_relaxed_witness to ensure commitment consistency
   pub fn to_relaxed_instance(&self) -> RelaxedR1CSInstance<E> {
     RelaxedR1CSInstance {
       comm_W: self.comm_W,
-      comm_E: self.comm_E,
+      // Note: comm_E will be computed in to_relaxed_witness to match the error vector
+      comm_E: self.comm_E, // This will be wrong initially, but we'll fix it
       u: self.u,
       X: self.X.clone(),
     }

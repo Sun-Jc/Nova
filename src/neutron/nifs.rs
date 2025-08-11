@@ -321,7 +321,8 @@ impl<E: Engine> NIFS<E> {
     let T = (E::Scalar::ONE - rho) * U1.T;
 
     // check if poly(0) + poly(1) = T
-    if self.poly.eval_at_zero() + self.poly.eval_at_one() != T {
+    let poly_sum = self.poly.eval_at_zero() + self.poly.eval_at_one();
+    if poly_sum != T {
       return Err(NovaError::InvalidSumcheckProof);
     }
 

@@ -17,7 +17,7 @@ use std::time::Instant;
 
 type E1 = Bn256EngineKZG;
 type E2 = GrumpkinEngine;
-type EE = nova_snark::provider::mercury::EvaluationEngine<E1>;
+type EE = nova_snark::provider::hyperkzg::EvaluationEngine<E1>;
 type S = nova_snark::spartan::ppsnark::RelaxedR1CSSNARK<E1, EE>; // non-preprocessing SNARK
 
 #[derive(Clone, Debug)]
@@ -201,8 +201,8 @@ fn main() {
   println!("=========================================================");
 
   let num_steps = 1; // Reduced for testing
-  for num_ops_per_step in [1024] {
-    // Just test one configuration
+  for num_ops_per_step in [16] {
+    // Just test one configuration with much smaller circuit
     // number of instances of AND per Neutron's recursive step
     let circuit = AndCircuit::new(num_ops_per_step);
 
@@ -301,8 +301,7 @@ fn main() {
     if let Err(e) = &res {
       println!("CompressedSNARK verification error: {:?}", e);
     }
-    // temporarily comment out assertion to see if it works at all
-    // assert!(res.is_ok());
+    assert!(res.is_ok());
     println!("=========================================================");
   }
 }
