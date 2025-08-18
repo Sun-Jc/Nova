@@ -347,7 +347,7 @@ impl<E: Engine> MemorySumcheckInstance<E> {
   ///            = eq(tau)[row[i]] * gamma + addr_row[i]
   ///   T_col[i] = mem_col[i]      * gamma + i
   ///            = z[i]            * gamma + i
-  ///   W_col[i] = L_col[i]     * gamma + addr_col[i]
+  ///   W_col[i] = L_col[i]        * gamma + addr_col[i]
   ///            = z[col[i]]       * gamma + addr_col[i]
   /// and
   ///   TS_row, TS_col are integer-valued vectors representing the number of reads
@@ -1173,7 +1173,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
             .map(|i| U.u * Cz[i] + E[i])
             .collect::<Vec<E::Scalar>>(),
           w.p.clone(), // Mz = Az + r * Bz + r^2 * Cz
-          &u.e,        // eval_Az_at_tau + r * eval_Az_at_tau + r^2 * eval_Cz_at_tau
+          &u.e,        // eval_Az_at_tau + r * eval_Bz_at_tau + r^2 * eval_Cz_at_tau
         );
 
         // a sum-check instance to prove the second claim
