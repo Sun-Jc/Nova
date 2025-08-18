@@ -347,7 +347,7 @@ impl<E: Engine> MemorySumcheckInstance<E> {
   ///            = eq(tau)[row[i]] * gamma + addr_row[i]
   ///   T_col[i] = mem_col[i]      * gamma + i
   ///            = z[i]            * gamma + i
-  ///   W_col[i] = addr_col[i]     * gamma + addr_col[i]
+  ///   W_col[i] = L_col[i]     * gamma + addr_col[i]
   ///            = z[col[i]]       * gamma + addr_col[i]
   /// and
   ///   TS_row, TS_col are integer-valued vectors representing the number of reads
@@ -643,6 +643,18 @@ impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstance<E> {
 
     vec![poly_row_final, poly_col_final]
   }
+}
+
+struct _OuterSumcheckInstance2<E: Engine> {
+  poly_tau: MultilinearPolynomial<E::Scalar>,
+  poly_Az: MultilinearPolynomial<E::Scalar>,
+  poly_Bz: MultilinearPolynomial<E::Scalar>,
+  poly_uCz_E: MultilinearPolynomial<E::Scalar>,
+
+  poly_Mz: MultilinearPolynomial<E::Scalar>,
+  eval_Mz_at_tau: E::Scalar,
+
+  poly_zero: MultilinearPolynomial<E::Scalar>,
 }
 
 struct OuterSumcheckInstance<E: Engine> {
