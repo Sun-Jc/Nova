@@ -1,3 +1,4 @@
+#![allow(dead_code, unused)]
 use crate::{
   errors::NovaError,
   spartan::polys::{
@@ -412,174 +413,6 @@ impl<E: Engine> SumcheckProof<E> {
       )
   }
 
-  #[inline]
-  #[allow(unused_variables, unused)]
-  pub fn compute_eval_points_cubic_with_eq_partial<F>(
-    poly_eq_left: &MultilinearPolynomial<E::Scalar>,
-    poly_eq_right: &MultilinearPolynomial<E::Scalar>,
-    poly_A: &MultilinearPolynomial<E::Scalar>,
-    poly_B: &MultilinearPolynomial<E::Scalar>,
-    poly_C: &MultilinearPolynomial<E::Scalar>,
-    comb_func: F,
-  ) -> (E::Scalar, E::Scalar, E::Scalar)
-  where
-    F: Fn(&E::Scalar, &E::Scalar, &E::Scalar) -> E::Scalar + Sync,
-  {
-    let half_l = poly_eq_right.len() as usize;
-    let half_p = half_l * poly_eq_left.len();
-
-    assert_eq!(half_p * 2, poly_A.len());
-
-    let (zero_A, one_A) = poly_A.Z.split_at(half_p);
-    let (zero_B, one_B) = poly_B.Z.split_at(half_p);
-    let (zero_C, one_C) = poly_C.Z.split_at(half_p);
-
-    let zip_A = zero_A.par_iter().zip(one_A);
-    let zip_B = zero_B.par_iter().zip(one_B);
-    let zip_C = zero_C.par_iter().zip(one_C);
-
-    dbg!(poly_A.len());
-    dbg!(zero_A.len());
-
-    // dbg!(poly_eq_left);
-    // dbg!(poly_eq_right);
-
-    zip_A
-      .zip(zip_B)
-      .zip(zip_C)
-      .enumerate()
-      .map(
-        |(i, (((zero_a, one_a), (zero_b, one_b)), (zero_c, one_c)))| {
-          let one_a_double = one_a.double();
-          let one_b_double = one_b.double();
-          let one_c_double = one_c.double();
-          let one_a_triple = one_a_double + one_a;
-          let one_b_triple = one_b_double + one_b;
-          let one_c_triple = one_c_double + one_c;
-          let zero_a_double = zero_a.double();
-          let zero_b_double = zero_b.double();
-          let zero_c_double = zero_c.double();
-
-          let e_a_0 = zero_a;
-          let e_b_0 = zero_b;
-          let e_c_0 = zero_c;
-
-          let e_a_2 = one_a_double - zero_a;
-          let e_b_2 = one_b_double - zero_b;
-          let e_c_2 = one_c_double - zero_c;
-
-          let e_a_3 = one_a_triple - zero_a_double;
-          let e_b_3 = one_b_triple - zero_b_double;
-          let e_c_3 = one_c_triple - zero_c_double;
-
-          let eval_0 = comb_func(&e_a_0, &e_b_0, &e_c_0);
-          let eval_2 = comb_func(&e_a_2, &e_b_2, &e_c_2);
-          let eval_3 = comb_func(&e_a_3, &e_b_3, &e_c_3);
-
-          let right_id = i % half_l;
-          let left_id = i >> (half_l.ilog2() as usize);
-
-          assert_eq!(i, right_id + left_id * half_l);
-          assert!(half_l.is_power_of_two());
-
-          let left = poly_eq_left[left_id];
-          let right = poly_eq_right[right_id];
-
-          let eval_0 = eval_0 * left * right;
-          let eval_2 = eval_2 * left * right;
-          let eval_3 = eval_3 * left * right;
-
-          (eval_0, eval_2, eval_3)
-        },
-      )
-      .reduce(
-        || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
-        |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
-      )
-  }
-
-  #[inline]
-  #[allow(unused_variables, unused)]
-  pub fn compute_eval_points_cubic_with_eq_partial_2<F>(
-    poly_eq_right: &MultilinearPolynomial<E::Scalar>,
-    poly_A: &MultilinearPolynomial<E::Scalar>,
-    poly_B: &MultilinearPolynomial<E::Scalar>,
-    poly_C: &MultilinearPolynomial<E::Scalar>,
-    comb_func: F,
-  ) -> (E::Scalar, E::Scalar, E::Scalar)
-  where
-    F: Fn(&E::Scalar, &E::Scalar, &E::Scalar) -> E::Scalar + Sync,
-  {
-    let half_l = poly_eq_right.len() as usize;
-    let half_p = half_l / 2;
-
-    assert_eq!(poly_eq_right.len() * 2, poly_A.len());
-
-    let (zero_A, one_A) = poly_A.Z.split_at(half_l);
-    let (zero_B, one_B) = poly_B.Z.split_at(half_l);
-    let (zero_C, one_C) = poly_C.Z.split_at(half_l);
-
-    let zip_A = zero_A.par_iter().zip(one_A);
-    let zip_B = zero_B.par_iter().zip(one_B);
-    let zip_C = zero_C.par_iter().zip(one_C);
-
-    dbg!(poly_A.len());
-    dbg!(zero_A.len());
-    assert_eq!(zero_A.len() * 2, poly_A.len());
-
-    // dbg!(poly_eq_left);
-    // dbg!(poly_eq_right);
-
-    zip_A
-      .zip(zip_B)
-      .zip(zip_C)
-      .enumerate()
-      .map(
-        |(i, (((zero_a, one_a), (zero_b, one_b)), (zero_c, one_c)))| {
-          let one_a_double = one_a.double();
-          let one_b_double = one_b.double();
-          let one_c_double = one_c.double();
-          let one_a_triple = one_a_double + one_a;
-          let one_b_triple = one_b_double + one_b;
-          let one_c_triple = one_c_double + one_c;
-          let zero_a_double = zero_a.double();
-          let zero_b_double = zero_b.double();
-          let zero_c_double = zero_c.double();
-
-          let e_a_0 = zero_a;
-          let e_b_0 = zero_b;
-          let e_c_0 = zero_c;
-
-          let e_a_2 = one_a_double - zero_a;
-          let e_b_2 = one_b_double - zero_b;
-          let e_c_2 = one_c_double - zero_c;
-
-          let e_a_3 = one_a_triple - zero_a_double;
-          let e_b_3 = one_b_triple - zero_b_double;
-          let e_c_3 = one_c_triple - zero_c_double;
-
-          let eval_0 = comb_func(&e_a_0, &e_b_0, &e_c_0);
-          let eval_2 = comb_func(&e_a_2, &e_b_2, &e_c_2);
-          let eval_3 = comb_func(&e_a_3, &e_b_3, &e_c_3);
-
-          let right_id = i;
-          assert!(half_l.is_power_of_two());
-
-          let right = poly_eq_right[right_id];
-
-          let eval_0 = eval_0 * right;
-          let eval_2 = eval_2 * right;
-          let eval_3 = eval_3 * right;
-
-          (eval_0, eval_2, eval_3)
-        },
-      )
-      .reduce(
-        || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
-        |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
-      )
-  }
-
   pub fn prove_cubic_with_additive_term<F>(
     claim: &E::Scalar,
     num_rounds: usize,
@@ -649,5 +482,315 @@ impl<E: Engine> SumcheckProof<E> {
       r,
       vec![poly_A[0], poly_B[0], poly_C[0], poly_D[0]],
     ))
+  }
+}
+
+pub(crate) struct EqSumCheckInstance<E: Engine> {
+  // number of variables at first
+  l: usize,
+  first_half: usize,
+  round: usize,
+  taus: Vec<E::Scalar>,
+  eval_eq_left: E::Scalar,
+  poly_eq_left: Vec<MultilinearPolynomial<E::Scalar>>,
+  poly_eq_right: Vec<MultilinearPolynomial<E::Scalar>>,
+  eq_tau_0_2_3: Vec<(E::Scalar, E::Scalar, E::Scalar)>,
+}
+
+impl<E: Engine> EqSumCheckInstance<E> {
+  pub fn new(taus: Vec<E::Scalar>) -> Self {
+    let l = taus.len();
+    let first_half = l / 2;
+
+    let compute_eq_polynomials = |taus: Vec<&E::Scalar>| -> Vec<MultilinearPolynomial<E::Scalar>> {
+      let len = taus.len();
+      let mut result = Vec::with_capacity(len + 1);
+
+      result.push(MultilinearPolynomial::new(vec![E::Scalar::ONE]));
+
+      for i in 0..len {
+        let tau = taus[i];
+
+        let (mut v_next, v_next_last): (Vec<E::Scalar>, Vec<E::Scalar>) = result[i]
+          .Z
+          .par_iter()
+          .map(|&v_val| {
+            let v_times_tau = v_val * tau;
+            let v_times_one_tau = v_val - v_times_tau;
+            (v_times_one_tau, v_times_tau)
+          })
+          .unzip();
+
+        v_next.extend(v_next_last);
+
+        result.push(MultilinearPolynomial::new(v_next));
+      }
+
+      result
+    };
+
+    let (left_taus, right_taus) = taus.split_at(first_half);
+    let left_taus = left_taus.iter().skip(1).rev().collect::<Vec<_>>();
+    let right_taus = right_taus.iter().rev().collect::<Vec<_>>();
+
+    let (poly_eq_left, poly_eq_right) = rayon::join(
+      || compute_eq_polynomials(left_taus),
+      || compute_eq_polynomials(right_taus),
+    );
+
+    let f2 = E::Scalar::ONE.double();
+    let f1 = E::Scalar::ONE;
+    let eq_tau_0_2_3 = taus
+      .par_iter()
+      .map(|tau| {
+        let tau2 = tau.double();
+        let tau3 = tau2 + tau;
+        let tau5 = tau3 + tau2;
+        (f1 - tau, tau3 - f1, tau5 - f2)
+      })
+      .collect::<Vec<_>>();
+
+    Self {
+      l,
+      first_half,
+      round: 1,
+      taus,
+      eval_eq_left: E::Scalar::ONE,
+      poly_eq_left,
+      poly_eq_right,
+      eq_tau_0_2_3,
+    }
+  }
+
+  pub fn bound(&mut self, r: &E::Scalar) {
+    let tau = self.taus[self.round - 1];
+    self.eval_eq_left *= E::Scalar::ONE - tau - r + (*r * tau).double();
+    self.round += 1;
+  }
+
+  pub fn evaluation_points_cubic_with_three_inputs<F>(
+    &self,
+    poly_A: &MultilinearPolynomial<E::Scalar>,
+    poly_B: &MultilinearPolynomial<E::Scalar>,
+    poly_C: &MultilinearPolynomial<E::Scalar>,
+    comb_func: F,
+  ) -> (E::Scalar, E::Scalar, E::Scalar)
+  where
+    F: Fn(&E::Scalar, &E::Scalar, &E::Scalar) -> E::Scalar + Sync,
+  {
+    let p = self.eval_eq_left;
+    let eq_tau_0_2_3 = self.eq_tau_0_2_3[self.round - 1];
+    let eq_tau_0_p = eq_tau_0_2_3.0 * p;
+    let eq_tau_2_p = eq_tau_0_2_3.1 * p;
+    let eq_tau_3_p = eq_tau_0_2_3.2 * p;
+
+    let (partial_eval_0, partial_eval_2, partial_eval_3) = if self.round < self.first_half {
+      let first_half = self.first_half;
+      let second_half = self.l - self.first_half;
+      let poly_eq_left = &self.poly_eq_left[self.first_half - self.round];
+      let poly_eq_right = &self.poly_eq_right[second_half];
+      let right_len = poly_eq_right.len();
+      assert_eq!(right_len, 1 << second_half);
+
+      let update_func = |eval: &E::Scalar, i: usize| {
+        let right_id = i % right_len;
+        let left_id = i >> second_half;
+
+        assert_eq!(i, right_id + left_id * right_len);
+
+        let left = poly_eq_left[left_id];
+        let right = poly_eq_right[right_id];
+
+        *eval * left * right
+      };
+
+      self.evaluation_points_cubic_with_three_inputs_internal(
+        poly_A,
+        poly_B,
+        poly_C,
+        comb_func,
+        update_func,
+      )
+    } else {
+      let poly_eq_right = &self.poly_eq_right[self.l - self.round];
+      let update_func = |eval: &E::Scalar, i: usize| {
+        let right_id = i;
+        let right = poly_eq_right[right_id];
+        *eval * right
+      };
+
+      self.evaluation_points_cubic_with_three_inputs_internal(
+        poly_A,
+        poly_B,
+        poly_C,
+        comb_func,
+        update_func,
+      )
+    };
+
+    (
+      partial_eval_0 * eq_tau_0_p,
+      partial_eval_2 * eq_tau_2_p,
+      partial_eval_3 * eq_tau_3_p,
+    )
+  }
+
+  fn evaluation_points_cubic_with_three_inputs_internal<F1, F2>(
+    &self,
+    poly_A: &MultilinearPolynomial<E::Scalar>,
+    poly_B: &MultilinearPolynomial<E::Scalar>,
+    poly_C: &MultilinearPolynomial<E::Scalar>,
+    comb_func: F1,
+    update_by_left_and_right: F2,
+  ) -> (E::Scalar, E::Scalar, E::Scalar)
+  where
+    F1: Fn(&E::Scalar, &E::Scalar, &E::Scalar) -> E::Scalar + Sync,
+    F2: Fn(&E::Scalar, usize) -> E::Scalar + Sync,
+  {
+    assert_eq!(poly_A.len() % 2, 0);
+
+    let half_p = poly_A.Z.len() / 2;
+
+    let (zero_A, one_A) = poly_A.Z.split_at(half_p);
+    let (zero_B, one_B) = poly_B.Z.split_at(half_p);
+    let (zero_C, one_C) = poly_C.Z.split_at(half_p);
+
+    let zip_A = zero_A.par_iter().zip(one_A);
+    let zip_B = zero_B.par_iter().zip(one_B);
+    let zip_C = zero_C.par_iter().zip(one_C);
+
+    zip_A
+      .zip(zip_B)
+      .zip(zip_C)
+      .enumerate()
+      .map(
+        |(i, (((zero_a, one_a), (zero_b, one_b)), (zero_c, one_c)))| {
+          let one_a_double = one_a.double();
+          let one_b_double = one_b.double();
+          let one_c_double = one_c.double();
+          let one_a_triple = one_a_double + one_a;
+          let one_b_triple = one_b_double + one_b;
+          let one_c_triple = one_c_double + one_c;
+          let zero_a_double = zero_a.double();
+          let zero_b_double = zero_b.double();
+          let zero_c_double = zero_c.double();
+
+          let e_a_0 = zero_a;
+          let e_b_0 = zero_b;
+          let e_c_0 = zero_c;
+
+          let e_a_2 = one_a_double - zero_a;
+          let e_b_2 = one_b_double - zero_b;
+          let e_c_2 = one_c_double - zero_c;
+
+          let e_a_3 = one_a_triple - zero_a_double;
+          let e_b_3 = one_b_triple - zero_b_double;
+          let e_c_3 = one_c_triple - zero_c_double;
+
+          let eval_0 = comb_func(&e_a_0, &e_b_0, &e_c_0);
+          let eval_2 = comb_func(&e_a_2, &e_b_2, &e_c_2);
+          let eval_3 = comb_func(&e_a_3, &e_b_3, &e_c_3);
+
+          let eval_0 = update_by_left_and_right(&eval_0, i);
+          let eval_2 = update_by_left_and_right(&eval_2, i);
+          let eval_3 = update_by_left_and_right(&eval_3, i);
+
+          (eval_0, eval_2, eval_3)
+        },
+      )
+      .reduce(
+        || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+        |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+      )
+  }
+
+  pub fn evaluation_points_cubic_with_one_input(
+    &self,
+    poly_A: &MultilinearPolynomial<E::Scalar>,
+  ) -> (E::Scalar, E::Scalar, E::Scalar) {
+    let p = self.eval_eq_left;
+    let eq_tau_0_2_3 = self.eq_tau_0_2_3[self.round - 1];
+    let eq_tau_0_p = eq_tau_0_2_3.0 * p;
+    let eq_tau_2_p = eq_tau_0_2_3.1 * p;
+    let eq_tau_3_p = eq_tau_0_2_3.2 * p;
+
+    let (partial_eval_0, partial_eval_2, partial_eval_3) = if self.round < self.first_half {
+      let poly_eq_left = &self.poly_eq_left[self.first_half - self.round];
+      let first_half = self.first_half;
+      let second_half = self.l - self.first_half;
+      let poly_eq_right = &self.poly_eq_right[second_half];
+      let right_len = poly_eq_right.len();
+      assert_eq!(right_len, 1 << second_half);
+
+      assert_eq!(poly_A.len(), poly_eq_left.len() * poly_eq_right.len() * 2);
+
+      let update_func = |eval: &E::Scalar, i: usize| {
+        let right_id = i % right_len;
+        let left_id = i >> second_half;
+
+        assert_eq!(i, right_id + left_id * right_len);
+
+        let left = poly_eq_left[left_id];
+        let right = poly_eq_right[right_id];
+
+        *eval * left * right
+      };
+
+      self.evaluation_points_cubic_with_one_input_internal(poly_A, update_func)
+    } else {
+      let poly_eq_right = &self.poly_eq_right[self.l - self.round];
+      let update_func = |eval: &E::Scalar, i: usize| {
+        let right_id = i;
+        let right = poly_eq_right[right_id];
+        *eval * right
+      };
+
+      self.evaluation_points_cubic_with_one_input_internal(poly_A, update_func)
+    };
+
+    (
+      partial_eval_0 * eq_tau_0_p,
+      partial_eval_2 * eq_tau_2_p,
+      partial_eval_3 * eq_tau_3_p,
+    )
+  }
+
+  fn evaluation_points_cubic_with_one_input_internal<F>(
+    &self,
+    poly_A: &MultilinearPolynomial<E::Scalar>,
+    update_by_left_and_right: F,
+  ) -> (E::Scalar, E::Scalar, E::Scalar)
+  where
+    F: Fn(&E::Scalar, usize) -> E::Scalar + Sync,
+  {
+    assert_eq!(poly_A.len() % 2, 0);
+
+    let half_p = poly_A.Z.len() / 2;
+
+    let (zero_A, one_A) = poly_A.Z.split_at(half_p);
+
+    let zip_A = zero_A.par_iter().zip(one_A);
+
+    zip_A
+      .enumerate()
+      .map(|(i, (zero_a, one_a))| {
+        let one_a_double = one_a.double();
+        let one_a_triple = one_a_double + one_a;
+        let zero_a_double = zero_a.double();
+
+        let eval_0 = zero_a;
+        let eval_2 = one_a_double - zero_a;
+        let eval_3 = one_a_triple - zero_a_double;
+
+        let eval_0 = update_by_left_and_right(&eval_0, i);
+        let eval_2 = update_by_left_and_right(&eval_2, i);
+        let eval_3 = update_by_left_and_right(&eval_3, i);
+
+        (eval_0, eval_2, eval_3)
+      })
+      .reduce(
+        || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+        |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+      )
   }
 }

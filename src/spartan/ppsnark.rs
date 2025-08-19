@@ -19,7 +19,7 @@ use crate::{
       univariate::{CompressedUniPoly, UniPoly},
     },
     powers,
-    sumcheck::{SumcheckEngine, SumcheckProof},
+    sumcheck::{EqSumCheckInstance, SumcheckEngine, SumcheckProof},
     PolyEvalInstance, PolyEvalWitness,
   },
   traits::{
@@ -651,19 +651,11 @@ struct OuterSumcheckInstance2<E: Engine> {
   poly_Az: MultilinearPolynomial<E::Scalar>,
   poly_Bz: MultilinearPolynomial<E::Scalar>,
   poly_uCz_E: MultilinearPolynomial<E::Scalar>,
-
   poly_Mz: MultilinearPolynomial<E::Scalar>,
 
   eval_Mz_at_tau: E::Scalar,
 
-  poly_eq_eval_left_partial: E::Scalar,
-
-  // eq(w[1:i], x_L),
-  poly_eq_left: Vec<MultilinearPolynomial<E::Scalar>>,
-  // eq(w[l/2:l/2+i], x_R)
-  poly_eq_right: Vec<MultilinearPolynomial<E::Scalar>>,
-
-  taus: Vec<E::Scalar>,
+  eq_sumcheck: EqSumCheckInstance<E>,
 }
 
 impl<E: Engine> OuterSumcheckInstance2<E> {
@@ -675,220 +667,14 @@ impl<E: Engine> OuterSumcheckInstance2<E> {
     Mz: Vec<E::Scalar>,
     eval_Mz_at_tau: &E::Scalar,
   ) -> Self {
-    let l = tau.len();
-    assert!(l % 2 == 0);
-    let half_l = l / 2;
-
-    // Implement Procedure 3 from the paper for computing eq polynomials
-    // This computes {eq(w[1:i], x) : x ∈ {0,1}^i} for all i ∈ [ℓ]
-
-    // Define the closure for Procedure 3
-    let compute_eq_polynomials =
-      |tau_slice: &[E::Scalar]| -> Vec<MultilinearPolynomial<E::Scalar>> {
-        let len = tau_slice.len();
-        let mut result = Vec::with_capacity(len + 1);
-
-        // Initialize v_0 := (1)
-        result.push(MultilinearPolynomial::new(vec![E::Scalar::ONE]));
-
-        // Build eq polynomials for each variable
-        for i in 0..len {
-          let tau_val = tau_slice[i];
-
-          // Parallel computation: iterate over prev, create pairs, then flatten
-          let v_next: Vec<E::Scalar> = result[i]
-            .Z
-            .par_iter()
-            .flat_map(|&v_val| {
-              // For each v_i[j], compute v_{i+1}[2j] and v_{i+1}[2j+1]
-              let v_times_tau = v_val * tau_val;
-              let v_minus = v_val - v_times_tau;
-              // Return [v_{i+1}[2j], v_{i+1}[2j+1]]
-              [v_minus, v_times_tau]
-            })
-            .collect();
-
-          result.push(MultilinearPolynomial::new(v_next));
-        }
-
-        result
-      };
-
-    // For poly_eq_left: compute eq polynomials for tau[1..=i] for i in 1..=half_l-1
-    // But we need to build them incrementally as expected by the test
-    // let poly_eq_left = compute_eq_polynomials(&tau[1..half_l]);
-    let poly_eq_left = {
-      let mut result = Vec::with_capacity(half_l);
-      for i in 1..half_l {
-        let tau_slice = &tau[i..half_l];
-        let eq_poly = EqPolynomial::new(tau_slice.to_vec()).evals();
-        result.push(MultilinearPolynomial::new(eq_poly));
-      }
-      result.push(MultilinearPolynomial::new(vec![E::Scalar::ONE]));
-      result.reverse();
-      result
-    };
-
-    // For poly_eq_right: compute eq polynomials for tau[half_l..half_l+i] for i in 0..=half_l
-    // let poly_eq_right = compute_eq_polynomials(&tau[half_l..]);
-    let poly_eq_right = {
-      let mut result = Vec::with_capacity(half_l + 1);
-      for i in 0..half_l {
-        let tau_slice = &tau[half_l + i..];
-        let eq_poly = EqPolynomial::new(tau_slice.to_vec()).evals();
-        result.push(MultilinearPolynomial::new(eq_poly));
-      }
-      result.push(MultilinearPolynomial::new(vec![E::Scalar::ONE]));
-      result.reverse();
-      result
-    };
-
     Self {
       poly_Az: MultilinearPolynomial::new(Az),
       poly_Bz: MultilinearPolynomial::new(Bz),
       poly_uCz_E: MultilinearPolynomial::new(uCz_E),
       poly_Mz: MultilinearPolynomial::new(Mz),
       eval_Mz_at_tau: *eval_Mz_at_tau,
-      poly_eq_left,
-      poly_eq_right,
-
-      poly_eq_eval_left_partial: E::Scalar::ONE,
-      taus: tau,
+      eq_sumcheck: EqSumCheckInstance::new(tau),
     }
-  }
-
-  fn compute_sumcheck_evals_for_first_half(&self, round: usize) -> Vec<Vec<E::Scalar>> {
-    let l = self.taus.len() / 2;
-
-    let poly_eq_left = &self.poly_eq_left[l - round];
-    let poly_eq_right = &self.poly_eq_right[l];
-
-    dbg!(round);
-    dbg!(l);
-    dbg!(poly_eq_left.len());
-    dbg!(poly_eq_right.len());
-    dbg!(self.poly_Az.len());
-    dbg!(self.poly_Bz.len());
-
-    assert_eq!(
-      self.poly_Az.len(),
-      poly_eq_left.len() * poly_eq_right.len() * 2
-    );
-    assert_eq!(poly_eq_right.len(), 1 << l);
-
-    let partial_h = SumcheckProof::<E>::compute_eval_points_cubic_with_eq_partial(
-      &poly_eq_left,
-      &poly_eq_right,
-      &self.poly_Az,
-      &self.poly_Bz,
-      &self.poly_uCz_E,
-      |a, b, c| *a * *b - *c,
-    );
-
-    // ! TODO: Opt
-    let partial_e = SumcheckProof::<E>::compute_eval_points_cubic_with_eq_partial(
-      &poly_eq_left,
-      &poly_eq_right,
-      &self.poly_Mz,
-      &self.poly_Mz,
-      &self.poly_Mz,
-      |a, _b, _c| *a,
-    );
-
-    let tau = self.taus[round - 1];
-
-    // (1-t)(1-u) + ut
-    let tau2 = tau.double();
-    let tau3 = tau2 + tau;
-    let tau5 = tau3 + tau2;
-    let f2 = E::Scalar::ONE.double();
-
-    let eq_tau_0 = E::Scalar::ONE - tau;
-    let eq_tau_2 = tau3 - E::Scalar::ONE;
-    let eq_tau_3 = tau5 - f2;
-
-    let p = self.poly_eq_eval_left_partial;
-    dbg!(p);
-
-    let eq_tau_0_p = eq_tau_0 * p;
-    let eq_tau_2_p = eq_tau_2 * p;
-    let eq_tau_3_p = eq_tau_3 * p;
-
-    vec![
-      vec![
-        partial_h.0 * eq_tau_0_p,
-        partial_h.1 * eq_tau_2_p,
-        partial_h.2 * eq_tau_3_p,
-      ],
-      vec![
-        partial_e.0 * eq_tau_0_p,
-        partial_e.1 * eq_tau_2_p,
-        partial_e.2 * eq_tau_3_p,
-      ],
-    ]
-  }
-
-  fn compute_sumcheck_evals_for_last_half(&self, round: usize) -> Vec<Vec<E::Scalar>> {
-    let l = self.taus.len() / 2;
-
-    let poly_eq_right = &self.poly_eq_right[l * 2 - round];
-
-    dbg!(round);
-    dbg!(l);
-    dbg!(poly_eq_right.len());
-    dbg!(self.poly_Az.len());
-    dbg!(self.poly_Bz.len());
-
-    // assert_eq!(poly_eq_right.len(), 1 << (l - round));
-
-    let partial_h = SumcheckProof::<E>::compute_eval_points_cubic_with_eq_partial_2(
-      &poly_eq_right,
-      &self.poly_Az,
-      &self.poly_Bz,
-      &self.poly_uCz_E,
-      |a, b, c| *a * *b - *c,
-    );
-
-    // ! TODO: Opt
-    let partial_e = SumcheckProof::<E>::compute_eval_points_cubic_with_eq_partial_2(
-      &poly_eq_right,
-      &self.poly_Mz,
-      &self.poly_Mz,
-      &self.poly_Mz,
-      |a, _b, _c| *a,
-    );
-
-    let tau = self.taus[round - 1];
-
-    // (1-t)(1-u) + ut
-    let tau2 = tau.double();
-    let tau3 = tau2 + tau;
-    let tau5 = tau3 + tau2;
-    let f2 = E::Scalar::ONE.double();
-
-    let eq_tau_0 = E::Scalar::ONE - tau;
-    let eq_tau_2 = tau3 - E::Scalar::ONE;
-    let eq_tau_3 = tau5 - f2;
-
-    let p = self.poly_eq_eval_left_partial;
-    dbg!(p);
-
-    let eq_tau_0_p = eq_tau_0 * p;
-    let eq_tau_2_p = eq_tau_2 * p;
-    let eq_tau_3_p = eq_tau_3 * p;
-
-    vec![
-      vec![
-        partial_h.0 * eq_tau_0_p,
-        partial_h.1 * eq_tau_2_p,
-        partial_h.2 * eq_tau_3_p,
-      ],
-      vec![
-        partial_e.0 * eq_tau_0_p,
-        partial_e.1 * eq_tau_2_p,
-        partial_e.2 * eq_tau_3_p,
-      ],
-    ]
   }
 }
 
@@ -906,16 +692,26 @@ impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance2<E> {
   }
 
   fn evaluation_points(&self) -> Vec<Vec<<E as Engine>::Scalar>> {
-    let l = self.taus.len();
-    let round = l - (self.size().ilog2() as usize) + 1;
+    let ((eval_h_0, eval_h_2, eval_h_3), (eval_e_0, eval_e_2, eval_e_3)) = rayon::join(
+      || {
+        self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
+          &self.poly_Az,
+          &self.poly_Bz,
+          &self.poly_uCz_E,
+          |a, b, c| *a * *b - *c,
+        )
+      },
+      || {
+        self
+          .eq_sumcheck
+          .evaluation_points_cubic_with_one_input(&self.poly_Mz)
+      },
+    );
 
-    dbg!(round);
-
-    if round < l / 2 {
-      self.compute_sumcheck_evals_for_first_half(round)
-    } else {
-      self.compute_sumcheck_evals_for_last_half(round)
-    }
+    vec![
+      vec![eval_h_0, eval_h_2, eval_h_3],
+      vec![eval_e_0, eval_e_2, eval_e_3],
+    ]
   }
 
   fn bound(&mut self, r: &<E as Engine>::Scalar) {
@@ -928,12 +724,7 @@ impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance2<E> {
     .par_iter_mut()
     .for_each(|poly| poly.bind_poly_var_top(r));
 
-    let l = self.taus.len();
-    let round = l - self.size().ilog2() as usize;
-    dbg!(round);
-    let tau = self.taus[round - 1];
-
-    self.poly_eq_eval_left_partial *= E::Scalar::ONE - tau - r + (*r * tau).double();
+    self.eq_sumcheck.bound(r);
   }
 
   fn final_claims(&self) -> Vec<Vec<<E as Engine>::Scalar>> {
@@ -2001,6 +1792,8 @@ mod batch_invert_tests {
 
   #[cfg(test)]
   mod tests {
+    use std::time::Instant;
+
     use super::*;
     use ff::Field;
     use rand::rngs::OsRng;
@@ -2034,7 +1827,7 @@ mod batch_invert_tests {
       type EE = EvaluationEngine<E>;
 
       // Create test parameters
-      let l = 8 as usize; // Small size for testing
+      let l = 21 as usize; // Small size for testing
       let half_l = l / 2;
       let n = (1 << l) as usize;
 
@@ -2057,19 +1850,17 @@ mod batch_invert_tests {
       let tau: Vec<<E as Engine>::Scalar> = (0..l)
         .map(|_| <E as Engine>::Scalar::random(&mut rng))
         .collect();
-      // let tau: Vec<_> = (0..l).map(|_| <E as Engine>::Scalar::ONE).collect();
-      // let tau: Vec<<E as Engine>::Scalar> = (1..=l)
-      //   .map(|i| <E as Engine>::Scalar::from(i as u64))
-      //   .collect();
-
-      dbg!(&tau);
 
       // Compute eval_Mz_at_tau
       let poly_Mz = MultilinearPolynomial::new(Mz.clone());
       let eval_Mz_at_tau = poly_Mz.evaluate(&tau);
 
+      let challenges = (0..l)
+        .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+        .collect::<Vec<_>>();
+
       // Create OuterSumcheckInstance2
-      let mut instance_old = OuterSumcheckInstance::<E>::new(
+      let mut instance = OuterSumcheckInstance::<E>::new(
         EqPolynomial::new(tau.clone()).evals(),
         Az.clone(),
         Bz.clone(),
@@ -2078,7 +1869,17 @@ mod batch_invert_tests {
         &eval_Mz_at_tau,
       );
 
-      let mut instance_new = OuterSumcheckInstance2::<E>::new(
+      let mut res_old = vec![];
+      let start = Instant::now();
+      for round in 1..=l {
+        let evals = instance.evaluation_points().clone();
+        instance.bound(&challenges[round - 1]);
+        res_old.push(evals);
+      }
+      let dur = start.elapsed();
+      println!("time taken (old): {:?}", dur);
+
+      let mut instance = OuterSumcheckInstance2::<E>::new(
         tau.clone(),
         Az.clone(),
         Bz.clone(),
@@ -2087,56 +1888,17 @@ mod batch_invert_tests {
         &eval_Mz_at_tau,
       );
 
-      // Verify the instance was created correctly
-      assert_eq!(instance_new.poly_Az.len(), n);
-      assert_eq!(instance_new.poly_Bz.len(), n);
-      assert_eq!(instance_new.poly_uCz_E.len(), n);
-      assert_eq!(instance_new.poly_Mz.len(), n);
-      assert_eq!(instance_new.eval_Mz_at_tau, eval_Mz_at_tau);
-
-      // Verify poly_eq_left has the correct structure
-      assert_eq!(instance_new.poly_eq_left.len(), half_l);
-      for i in 1..half_l {
-        let tau_left = &tau[i..half_l];
-        let expected = EqPolynomial::new(tau_left.to_vec()).evals();
-        let actual = instance_new.poly_eq_left[half_l - i].clone();
-        assert_eq!(expected, actual.Z);
-        println!("poly_eq_left {} accepted", i);
-
-        assert_eq!(instance_new.poly_eq_left[i].len(), 1 << i);
-      }
-
-      // Verify poly_eq_right has the correct structure
-      assert_eq!(instance_new.poly_eq_right.len(), half_l + 1);
-      for i in 0..=half_l {
-        let tau_right = &tau[half_l + i..];
-        let expected = EqPolynomial::new(tau_right.to_vec()).evals();
-        let actual = instance_new.poly_eq_right[half_l - i].clone();
-        assert_eq!(expected, actual.Z);
-        println!("poly_eq_right {} accepted", i);
-
-        assert_eq!(instance_new.poly_eq_right[i].len(), 1 << i);
-      }
-
-      // The verification checks in the new() method should have passed
-      // (they use assert_eq! internally, so test would fail if they didn't match)
-
-      println!("OuterSumcheckInstance2::new test passed successfully");
-
-      dbg!(half_l);
-
+      let mut res_new = vec![];
+      let start = Instant::now();
       for round in 1..=l {
-        let evals_old = instance_old.evaluation_points().clone();
-        let evals_new = instance_new.evaluation_points().clone();
-
-        assert_eq!(evals_old, evals_new);
-
-        println!("evals passed for round {}", round);
-
-        let r = <E as Engine>::Scalar::random(&mut OsRng);
-        instance_new.bound(&r);
-        instance_old.bound(&r);
+        let evals = instance.evaluation_points().clone();
+        instance.bound(&challenges[round - 1]);
+        res_new.push(evals);
       }
+      let dur = start.elapsed();
+      println!("time taken (new): {:?}", dur);
+
+      assert_eq!(res_old, res_new);
     }
   }
 }
