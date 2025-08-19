@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-#![allow(unused)]
+#![allow(unused, non_camel_case_types)]
 //! This module implements `RelaxedR1CSSNARK` traits using a spark-based approach to prove evaluations of
 //! sparse multilinear polynomials involved in Spartan's sum-check protocol, thereby providing a preprocessing SNARK
 //! The verifier in this preprocessing SNARK maintains a commitment to R1CS matrices. This is beneficial when using a
@@ -311,6 +311,194 @@ impl<E: Engine> SumcheckEngine<E> for WitnessBoundSumcheck<E> {
 
   fn final_claims(&self) -> Vec<Vec<E::Scalar>> {
     vec![vec![self.poly_W[0], self.poly_masked_eq[0]]]
+  }
+}
+
+struct MemorySumcheckInstance2<E: Engine> {
+  // row
+  w_plus_r_row: MultilinearPolynomial<E::Scalar>,
+  t_plus_r_row: MultilinearPolynomial<E::Scalar>,
+  t_plus_r_inv_row: MultilinearPolynomial<E::Scalar>,
+  w_plus_r_inv_row: MultilinearPolynomial<E::Scalar>,
+  ts_row: MultilinearPolynomial<E::Scalar>,
+
+  // col
+  w_plus_r_col: MultilinearPolynomial<E::Scalar>,
+  t_plus_r_col: MultilinearPolynomial<E::Scalar>,
+  t_plus_r_inv_col: MultilinearPolynomial<E::Scalar>,
+  w_plus_r_inv_col: MultilinearPolynomial<E::Scalar>,
+  ts_col: MultilinearPolynomial<E::Scalar>,
+
+  rhos: Vec<E::Scalar>,
+
+  eq_sumcheck: EqSumCheckInstance<E>,
+}
+
+impl<E: Engine> MemorySumcheckInstance2<E> {
+  pub fn new(
+    polys_oracle: [Vec<E::Scalar>; 4],
+    polys_aux: [Vec<E::Scalar>; 4],
+    rhos: Vec<E::Scalar>,
+    ts_row: Vec<E::Scalar>,
+    ts_col: Vec<E::Scalar>,
+  ) -> Self {
+    let [t_plus_r_inv_row, w_plus_r_inv_row, t_plus_r_inv_col, w_plus_r_inv_col] = polys_oracle;
+    let [t_plus_r_row, w_plus_r_row, t_plus_r_col, w_plus_r_col] = polys_aux;
+
+    let eq_sumcheck = EqSumCheckInstance::new(rhos.clone());
+
+    Self {
+      w_plus_r_row: MultilinearPolynomial::new(w_plus_r_row),
+      t_plus_r_row: MultilinearPolynomial::new(t_plus_r_row),
+      t_plus_r_inv_row: MultilinearPolynomial::new(t_plus_r_inv_row),
+      w_plus_r_inv_row: MultilinearPolynomial::new(w_plus_r_inv_row),
+      ts_row: MultilinearPolynomial::new(ts_row),
+      w_plus_r_col: MultilinearPolynomial::new(w_plus_r_col),
+      t_plus_r_col: MultilinearPolynomial::new(t_plus_r_col),
+      t_plus_r_inv_col: MultilinearPolynomial::new(t_plus_r_inv_col),
+      w_plus_r_inv_col: MultilinearPolynomial::new(w_plus_r_inv_col),
+      ts_col: MultilinearPolynomial::new(ts_col),
+      rhos,
+      eq_sumcheck,
+    }
+  }
+}
+
+impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstance2<E> {
+  fn initial_claims(&self) -> Vec<E::Scalar> {
+    vec![E::Scalar::ZERO; 6]
+  }
+
+  fn degree(&self) -> usize {
+    3
+  }
+
+  fn size(&self) -> usize {
+    // sanity checks
+    assert_eq!(self.w_plus_r_row.len(), self.t_plus_r_row.len());
+    assert_eq!(self.w_plus_r_row.len(), self.ts_row.len());
+    assert_eq!(self.w_plus_r_row.len(), self.w_plus_r_col.len());
+    assert_eq!(self.w_plus_r_row.len(), self.t_plus_r_col.len());
+    assert_eq!(self.w_plus_r_row.len(), self.ts_col.len());
+
+    self.w_plus_r_row.len()
+  }
+
+  fn evaluation_points(&self) -> Vec<Vec<E::Scalar>> {
+    let comb_func = |poly_A_comp: &E::Scalar,
+                     poly_B_comp: &E::Scalar,
+                     _poly_C_comp: &E::Scalar|
+     -> E::Scalar { *poly_A_comp - *poly_B_comp };
+
+    let comb_func2 =
+      |poly_A_comp: &E::Scalar,
+       poly_B_comp: &E::Scalar,
+       poly_C_comp: &E::Scalar,
+       _poly_D_comp: &E::Scalar|
+       -> E::Scalar { *poly_A_comp * (*poly_B_comp * *poly_C_comp - E::Scalar::ONE) };
+
+    let comb_func3 =
+      |poly_A_comp: &E::Scalar,
+       poly_B_comp: &E::Scalar,
+       poly_C_comp: &E::Scalar,
+       poly_D_comp: &E::Scalar|
+       -> E::Scalar { *poly_A_comp * (*poly_B_comp * *poly_C_comp - *poly_D_comp) };
+
+    // inv related evaluation points
+    // 0 = ∑ TS[i]/(T[i] + r) - 1/(W[i] + r)
+    let (eval_inv_0_row, eval_inv_2_row, eval_inv_3_row) =
+      SumcheckProof::<E>::compute_eval_points_cubic(
+        &self.t_plus_r_inv_row,
+        &self.w_plus_r_inv_row,
+        &self.w_plus_r_inv_row, // unused
+        &comb_func,
+      );
+
+    let (eval_inv_0_col, eval_inv_2_col, eval_inv_3_col) =
+      SumcheckProof::<E>::compute_eval_points_cubic(
+        &self.t_plus_r_inv_col,
+        &self.w_plus_r_inv_col,
+        &self.w_plus_r_inv_col, // unused
+        &comb_func,
+      );
+
+    // row related evaluation points
+    // 0 = ∑ eq[i] * (inv_T[i] * (T[i] + r) - TS[i]))
+    let (eval_T_0_row, eval_T_2_row, eval_T_3_row) =
+      self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
+        &self.t_plus_r_inv_row,
+        &self.t_plus_r_row,
+        &self.ts_row,
+        |a, b, c| *a * *b - *c,
+      );
+    // 0 = ∑ eq[i] * (inv_W[i] * (T[i] + r) - 1))
+    let (eval_W_0_row, eval_W_2_row, eval_W_3_row) =
+      self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
+        &self.w_plus_r_inv_row,
+        &self.w_plus_r_row,
+        &self.w_plus_r_row, // unused
+        |a, b, c| *a * *b - E::Scalar::ONE,
+      );
+
+    // column related evaluation points
+    let (eval_T_0_col, eval_T_2_col, eval_T_3_col) =
+      self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
+        &self.t_plus_r_inv_col,
+        &self.t_plus_r_col,
+        &self.ts_col,
+        |a, b, c| *a * *b - *c,
+      );
+    let (eval_W_0_col, eval_W_2_col, eval_W_3_col) =
+      self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
+        &self.w_plus_r_inv_col,
+        &self.w_plus_r_col,
+        &self.w_plus_r_col, // unused
+        |a, b, c| *a * *b - E::Scalar::ONE,
+      );
+
+    vec![
+      vec![eval_inv_0_row, eval_inv_2_row, eval_inv_3_row],
+      vec![eval_inv_0_col, eval_inv_2_col, eval_inv_3_col],
+      vec![eval_T_0_row, eval_T_2_row, eval_T_3_row],
+      vec![eval_W_0_row, eval_W_2_row, eval_W_3_row],
+      vec![eval_T_0_col, eval_T_2_col, eval_T_3_col],
+      vec![eval_W_0_col, eval_W_2_col, eval_W_3_col],
+    ]
+  }
+
+  fn bound(&mut self, r: &E::Scalar) {
+    [
+      &mut self.t_plus_r_row,
+      &mut self.t_plus_r_inv_row,
+      &mut self.w_plus_r_row,
+      &mut self.w_plus_r_inv_row,
+      &mut self.ts_row,
+      &mut self.t_plus_r_col,
+      &mut self.t_plus_r_inv_col,
+      &mut self.w_plus_r_col,
+      &mut self.w_plus_r_inv_col,
+      &mut self.ts_col,
+    ]
+    .par_iter_mut()
+    .for_each(|poly| poly.bind_poly_var_top(r));
+
+    self.eq_sumcheck.bound(r);
+  }
+
+  fn final_claims(&self) -> Vec<Vec<E::Scalar>> {
+    let poly_row_final = vec![
+      self.t_plus_r_inv_row[0],
+      self.w_plus_r_inv_row[0],
+      self.ts_row[0],
+    ];
+
+    let poly_col_final = vec![
+      self.t_plus_r_inv_col[0],
+      self.w_plus_r_inv_col[0],
+      self.ts_col[0],
+    ];
+
+    vec![poly_row_final, poly_col_final]
   }
 }
 
@@ -647,7 +835,7 @@ impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstance<E> {
   }
 }
 
-struct OuterSumcheckInstance2<E: Engine> {
+struct OuterSumcheckInstance<E: Engine> {
   poly_Az: MultilinearPolynomial<E::Scalar>,
   poly_Bz: MultilinearPolynomial<E::Scalar>,
   poly_uCz_E: MultilinearPolynomial<E::Scalar>,
@@ -658,7 +846,7 @@ struct OuterSumcheckInstance2<E: Engine> {
   eq_sumcheck: EqSumCheckInstance<E>,
 }
 
-impl<E: Engine> OuterSumcheckInstance2<E> {
+impl<E: Engine> OuterSumcheckInstance<E> {
   pub fn new(
     tau: Vec<E::Scalar>,
     Az: Vec<E::Scalar>,
@@ -678,7 +866,7 @@ impl<E: Engine> OuterSumcheckInstance2<E> {
   }
 }
 
-impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance2<E> {
+impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance<E> {
   fn initial_claims(&self) -> Vec<<E as Engine>::Scalar> {
     vec![E::Scalar::ZERO, self.eval_Mz_at_tau]
   }
@@ -692,21 +880,17 @@ impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance2<E> {
   }
 
   fn evaluation_points(&self) -> Vec<Vec<<E as Engine>::Scalar>> {
-    let ((eval_h_0, eval_h_2, eval_h_3), (eval_e_0, eval_e_2, eval_e_3)) = rayon::join(
-      || {
-        self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
-          &self.poly_Az,
-          &self.poly_Bz,
-          &self.poly_uCz_E,
-          |a, b, c| *a * *b - *c,
-        )
-      },
-      || {
-        self
-          .eq_sumcheck
-          .evaluation_points_cubic_with_one_input(&self.poly_Mz)
-      },
-    );
+    let (eval_h_0, eval_h_2, eval_h_3) =
+      self.eq_sumcheck.evaluation_points_cubic_with_three_inputs(
+        &self.poly_Az,
+        &self.poly_Bz,
+        &self.poly_uCz_E,
+        |a, b, c| *a * *b - *c,
+      );
+
+    let (eval_e_0, eval_e_2, eval_e_3) = self
+      .eq_sumcheck
+      .evaluation_points_cubic_with_one_input(&self.poly_Mz);
 
     vec![
       vec![eval_h_0, eval_h_2, eval_h_3],
@@ -732,7 +916,7 @@ impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance2<E> {
   }
 }
 
-struct OuterSumcheckInstance<E: Engine> {
+struct OuterSumcheckInstance_dep<E: Engine> {
   poly_tau: MultilinearPolynomial<E::Scalar>,
   poly_Az: MultilinearPolynomial<E::Scalar>,
   poly_Bz: MultilinearPolynomial<E::Scalar>,
@@ -744,7 +928,7 @@ struct OuterSumcheckInstance<E: Engine> {
   poly_zero: MultilinearPolynomial<E::Scalar>,
 }
 
-impl<E: Engine> OuterSumcheckInstance<E> {
+impl<E: Engine> OuterSumcheckInstance_dep<E> {
   pub fn new(
     tau: Vec<E::Scalar>,
     Az: Vec<E::Scalar>,
@@ -766,7 +950,7 @@ impl<E: Engine> OuterSumcheckInstance<E> {
   }
 }
 
-impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance<E> {
+impl<E: Engine> SumcheckEngine<E> for OuterSumcheckInstance_dep<E> {
   fn initial_claims(&self) -> Vec<E::Scalar> {
     vec![E::Scalar::ZERO, self.eval_Mz_at_tau]
   }
@@ -1241,7 +1425,8 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       || {
         // a sum-check instance to prove the first claim
         let outer_sc_inst = OuterSumcheckInstance::new(
-          EqPolynomial::new(tau.clone()).evals(),
+          // EqPolynomial::new(tau.clone()).evals(),
+          tau.clone(),
           Az.clone(),
           Bz.clone(),
           (0..Cz.len())
@@ -1293,13 +1478,13 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
         let rho = (0..num_rounds_sc)
           .map(|_| transcript.squeeze(b"r"))
           .collect::<Result<Vec<_>, NovaError>>()?;
-        let poly_eq = MultilinearPolynomial::new(EqPolynomial::new(rho).evals());
+        // let poly_eq = MultilinearPolynomial::new(EqPolynomial::new(rho).evals());
 
         Ok::<_, NovaError>((
-          MemorySumcheckInstance::new(
+          MemorySumcheckInstance2::new(
             mem_oracles.clone(),
             mem_aux,
-            poly_eq.Z,
+            rho,
             pk.S_repr.ts_row.clone(),
             pk.S_repr.ts_col.clone(),
           ),
@@ -1827,7 +2012,7 @@ mod batch_invert_tests {
       type EE = EvaluationEngine<E>;
 
       // Create test parameters
-      let l = 21 as usize; // Small size for testing
+      let l = 18 as usize; // Small size for testing
       let half_l = l / 2;
       let n = (1 << l) as usize;
 
@@ -1859,27 +2044,9 @@ mod batch_invert_tests {
         .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
         .collect::<Vec<_>>();
 
-      // Create OuterSumcheckInstance2
-      let mut instance = OuterSumcheckInstance::<E>::new(
-        EqPolynomial::new(tau.clone()).evals(),
-        Az.clone(),
-        Bz.clone(),
-        uCz_E.clone(),
-        Mz.clone(),
-        &eval_Mz_at_tau,
-      );
-
-      let mut res_old = vec![];
+      // Create OuterSumcheckInstance
       let start = Instant::now();
-      for round in 1..=l {
-        let evals = instance.evaluation_points().clone();
-        instance.bound(&challenges[round - 1]);
-        res_old.push(evals);
-      }
-      let dur = start.elapsed();
-      println!("time taken (old): {:?}", dur);
-
-      let mut instance = OuterSumcheckInstance2::<E>::new(
+      let mut instance = OuterSumcheckInstance::<E>::new(
         tau.clone(),
         Az.clone(),
         Bz.clone(),
@@ -1888,15 +2055,34 @@ mod batch_invert_tests {
         &eval_Mz_at_tau,
       );
 
-      let mut res_new = vec![];
+      let mut res_old = vec![];
+
+      for round in 1..=l {
+        let evals = instance.evaluation_points().clone();
+        instance.bound(&challenges[round - 1]);
+        res_old.push(evals);
+      }
+      let dur = start.elapsed();
+      println!("time taken (new): {:?}", dur);
+
       let start = Instant::now();
+      let mut instance = OuterSumcheckInstance_dep::<E>::new(
+        EqPolynomial::new(tau.clone()).evals(),
+        Az.clone(),
+        Bz.clone(),
+        uCz_E.clone(),
+        Mz.clone(),
+        &eval_Mz_at_tau,
+      );
+
+      let mut res_new = vec![];
       for round in 1..=l {
         let evals = instance.evaluation_points().clone();
         instance.bound(&challenges[round - 1]);
         res_new.push(evals);
       }
       let dur = start.elapsed();
-      println!("time taken (new): {:?}", dur);
+      println!("time taken (dep): {:?}", dur);
 
       assert_eq!(res_old, res_new);
     }
