@@ -412,6 +412,174 @@ impl<E: Engine> SumcheckProof<E> {
       )
   }
 
+  #[inline]
+  #[allow(unused_variables, unused)]
+  pub fn compute_eval_points_cubic_with_eq_partial<F>(
+    poly_eq_left: &MultilinearPolynomial<E::Scalar>,
+    poly_eq_right: &MultilinearPolynomial<E::Scalar>,
+    poly_A: &MultilinearPolynomial<E::Scalar>,
+    poly_B: &MultilinearPolynomial<E::Scalar>,
+    poly_C: &MultilinearPolynomial<E::Scalar>,
+    comb_func: F,
+  ) -> (E::Scalar, E::Scalar, E::Scalar)
+  where
+    F: Fn(&E::Scalar, &E::Scalar, &E::Scalar) -> E::Scalar + Sync,
+  {
+    let half_l = poly_eq_right.len() as usize;
+    let half_p = half_l * poly_eq_left.len();
+
+    assert_eq!(half_p * 2, poly_A.len());
+
+    let (zero_A, one_A) = poly_A.Z.split_at(half_p);
+    let (zero_B, one_B) = poly_B.Z.split_at(half_p);
+    let (zero_C, one_C) = poly_C.Z.split_at(half_p);
+
+    let zip_A = zero_A.par_iter().zip(one_A);
+    let zip_B = zero_B.par_iter().zip(one_B);
+    let zip_C = zero_C.par_iter().zip(one_C);
+
+    dbg!(poly_A.len());
+    dbg!(zero_A.len());
+
+    // dbg!(poly_eq_left);
+    // dbg!(poly_eq_right);
+
+    zip_A
+      .zip(zip_B)
+      .zip(zip_C)
+      .enumerate()
+      .map(
+        |(i, (((zero_a, one_a), (zero_b, one_b)), (zero_c, one_c)))| {
+          let one_a_double = one_a.double();
+          let one_b_double = one_b.double();
+          let one_c_double = one_c.double();
+          let one_a_triple = one_a_double + one_a;
+          let one_b_triple = one_b_double + one_b;
+          let one_c_triple = one_c_double + one_c;
+          let zero_a_double = zero_a.double();
+          let zero_b_double = zero_b.double();
+          let zero_c_double = zero_c.double();
+
+          let e_a_0 = zero_a;
+          let e_b_0 = zero_b;
+          let e_c_0 = zero_c;
+
+          let e_a_2 = one_a_double - zero_a;
+          let e_b_2 = one_b_double - zero_b;
+          let e_c_2 = one_c_double - zero_c;
+
+          let e_a_3 = one_a_triple - zero_a_double;
+          let e_b_3 = one_b_triple - zero_b_double;
+          let e_c_3 = one_c_triple - zero_c_double;
+
+          let eval_0 = comb_func(&e_a_0, &e_b_0, &e_c_0);
+          let eval_2 = comb_func(&e_a_2, &e_b_2, &e_c_2);
+          let eval_3 = comb_func(&e_a_3, &e_b_3, &e_c_3);
+
+          let right_id = i % half_l;
+          let left_id = i >> (half_l.ilog2() as usize);
+
+          assert_eq!(i, right_id + left_id * half_l);
+          assert!(half_l.is_power_of_two());
+
+          let left = poly_eq_left[left_id];
+          let right = poly_eq_right[right_id];
+
+          let eval_0 = eval_0 * left * right;
+          let eval_2 = eval_2 * left * right;
+          let eval_3 = eval_3 * left * right;
+
+          (eval_0, eval_2, eval_3)
+        },
+      )
+      .reduce(
+        || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+        |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+      )
+  }
+
+  #[inline]
+  #[allow(unused_variables, unused)]
+  pub fn compute_eval_points_cubic_with_eq_partial_2<F>(
+    poly_eq_right: &MultilinearPolynomial<E::Scalar>,
+    poly_A: &MultilinearPolynomial<E::Scalar>,
+    poly_B: &MultilinearPolynomial<E::Scalar>,
+    poly_C: &MultilinearPolynomial<E::Scalar>,
+    comb_func: F,
+  ) -> (E::Scalar, E::Scalar, E::Scalar)
+  where
+    F: Fn(&E::Scalar, &E::Scalar, &E::Scalar) -> E::Scalar + Sync,
+  {
+    let half_l = poly_eq_right.len() as usize;
+    let half_p = half_l / 2;
+
+    assert_eq!(poly_eq_right.len() * 2, poly_A.len());
+
+    let (zero_A, one_A) = poly_A.Z.split_at(half_l);
+    let (zero_B, one_B) = poly_B.Z.split_at(half_l);
+    let (zero_C, one_C) = poly_C.Z.split_at(half_l);
+
+    let zip_A = zero_A.par_iter().zip(one_A);
+    let zip_B = zero_B.par_iter().zip(one_B);
+    let zip_C = zero_C.par_iter().zip(one_C);
+
+    dbg!(poly_A.len());
+    dbg!(zero_A.len());
+    assert_eq!(zero_A.len() * 2, poly_A.len());
+
+    // dbg!(poly_eq_left);
+    // dbg!(poly_eq_right);
+
+    zip_A
+      .zip(zip_B)
+      .zip(zip_C)
+      .enumerate()
+      .map(
+        |(i, (((zero_a, one_a), (zero_b, one_b)), (zero_c, one_c)))| {
+          let one_a_double = one_a.double();
+          let one_b_double = one_b.double();
+          let one_c_double = one_c.double();
+          let one_a_triple = one_a_double + one_a;
+          let one_b_triple = one_b_double + one_b;
+          let one_c_triple = one_c_double + one_c;
+          let zero_a_double = zero_a.double();
+          let zero_b_double = zero_b.double();
+          let zero_c_double = zero_c.double();
+
+          let e_a_0 = zero_a;
+          let e_b_0 = zero_b;
+          let e_c_0 = zero_c;
+
+          let e_a_2 = one_a_double - zero_a;
+          let e_b_2 = one_b_double - zero_b;
+          let e_c_2 = one_c_double - zero_c;
+
+          let e_a_3 = one_a_triple - zero_a_double;
+          let e_b_3 = one_b_triple - zero_b_double;
+          let e_c_3 = one_c_triple - zero_c_double;
+
+          let eval_0 = comb_func(&e_a_0, &e_b_0, &e_c_0);
+          let eval_2 = comb_func(&e_a_2, &e_b_2, &e_c_2);
+          let eval_3 = comb_func(&e_a_3, &e_b_3, &e_c_3);
+
+          let right_id = i;
+          assert!(half_l.is_power_of_two());
+
+          let right = poly_eq_right[right_id];
+
+          let eval_0 = eval_0 * right;
+          let eval_2 = eval_2 * right;
+          let eval_3 = eval_3 * right;
+
+          (eval_0, eval_2, eval_3)
+        },
+      )
+      .reduce(
+        || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+        |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+      )
+  }
+
   pub fn prove_cubic_with_additive_term<F>(
     claim: &E::Scalar,
     num_rounds: usize,
