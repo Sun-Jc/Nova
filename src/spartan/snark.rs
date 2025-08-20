@@ -111,6 +111,16 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     Ok((pk, vk))
   }
 
+  fn prove2(
+    _ck: &CommitmentKey<E>,
+    _pk: &Self::ProverKey,
+    _S: &R1CSShape<E>,
+    _U: &RelaxedR1CSInstance<E>,
+    _W: &RelaxedR1CSWitness<E>,
+  ) -> Result<Self, NovaError> {
+    todo!()
+  }
+
   /// produces a succinct proof of satisfiability of a `RelaxedR1CS` instance
   fn prove(
     ck: &CommitmentKey<E>,

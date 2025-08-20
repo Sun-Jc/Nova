@@ -50,6 +50,15 @@ pub trait RelaxedR1CSSNARKTrait<E: Engine>:
     W: &RelaxedR1CSWitness<E>,
   ) -> Result<Self, NovaError>;
 
+  /// TBA
+  fn prove2(
+    ck: &CommitmentKey<E>,
+    pk: &Self::ProverKey,
+    S: &R1CSShape<E>,
+    U: &RelaxedR1CSInstance<E>,
+    W: &RelaxedR1CSWitness<E>,
+  ) -> Result<Self, NovaError>;
+
   /// Verifies a SNARK for a relaxed R1CS
   fn verify(&self, vk: &Self::VerifierKey, U: &RelaxedR1CSInstance<E>) -> Result<(), NovaError>;
 }

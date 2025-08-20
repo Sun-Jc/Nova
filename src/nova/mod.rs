@@ -747,6 +747,7 @@ where
     );
 
     // create SNARKs proving the knowledge of Wn primary/secondary
+    let start = std::time::Instant::now();
     let (snark_primary, snark_secondary) = rayon::join(
       || {
         S1::prove(
@@ -767,6 +768,36 @@ where
         )
       },
     );
+    let _snark_primary = snark_primary?;
+    let _snark_secondary = snark_secondary?;
+    let dur1 = start.elapsed();
+
+    let start2 = std::time::Instant::now();
+    let (snark_primary2, snark_secondary2) = rayon::join(
+      || {
+        S1::prove2(
+          &pp.ck_primary,
+          &pk.pk_primary,
+          &pp.r1cs_shape_primary,
+          &derandom_r_Un_primary,
+          &derandom_r_Wn_primary,
+        )
+      },
+      || {
+        S2::prove2(
+          &pp.ck_secondary,
+          &pk.pk_secondary,
+          &pp.r1cs_shape_secondary,
+          &derandom_r_Un_secondary,
+          &derandom_r_Wn_secondary,
+        )
+      },
+    );
+    let snark_primary = snark_primary2?;
+    let snark_secondary = snark_secondary2?;
+    let dur2 = start2.elapsed();
+    println!("time taken (new): {:?}", dur2);
+    println!("time taken (dep): {:?}", dur1);
 
     Ok(Self {
       r_U_secondary: recursive_snark.r_U_secondary.clone(),
@@ -787,8 +818,8 @@ where
       wit_blind_r_Wn_secondary,
       err_blind_r_Wn_secondary,
 
-      snark_primary: snark_primary?,
-      snark_secondary: snark_secondary?,
+      snark_primary,
+      snark_secondary,
 
       zn: recursive_snark.zi.clone(),
 

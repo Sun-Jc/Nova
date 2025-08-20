@@ -511,16 +511,14 @@ impl<E: Engine> EqSumCheckInstance<E> {
       for i in 0..len {
         let tau = taus[i];
 
-        let (mut v_next, v_next_last): (Vec<E::Scalar>, Vec<E::Scalar>) = result[i]
-          .par_iter()
-          .map(|&v_val| {
-            let v_times_tau = v_val * tau;
-            let v_times_one_tau = v_val - v_times_tau;
-            (v_times_one_tau, v_times_tau)
-          })
-          .unzip();
-
-        v_next.extend(v_next_last);
+        let prev = &result[i];
+        let mut v_next = prev.to_vec();
+        v_next.par_extend(prev.par_iter().map(|v| *v * tau));
+        let (first, last) = v_next.split_at_mut(prev.len());
+        first
+          .par_iter_mut()
+          .zip(last)
+          .for_each(|(a, b)| *a = *a - *b);
 
         result.push(v_next);
       }
@@ -675,8 +673,7 @@ impl<E: Engine> EqSumCheckInstance<E> {
             let right = poly_eq_right[right_id];
             left * right
           } else {
-            let right_id = i;
-            poly_eq_right[right_id]
+            poly_eq_right[i]
           };
 
           eval_0 *= factor;
@@ -752,8 +749,7 @@ impl<E: Engine> EqSumCheckInstance<E> {
           assert_eq!(i, left_id * (1 << second_half) + right_id);
           left * right
         } else {
-          let right_id = i;
-          poly_eq_right[right_id]
+          poly_eq_right[i]
         };
 
         eval_0 *= factor;

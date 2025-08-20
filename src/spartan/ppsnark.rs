@@ -1200,6 +1200,8 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
     let mut r: Vec<E::Scalar> = Vec::new();
     let mut cubic_polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::new();
     let num_rounds = mem.size().log_2();
+    let start = std::time::Instant::now();
+
     for _ in 0..num_rounds {
       let ((evals_mem, evals_outer), (evals_inner, evals_witness)) = rayon::join(
         || rayon::join(|| mem.evaluation_points(), || outer.evaluation_points()),
@@ -1241,6 +1243,9 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
       e = poly.evaluate(&r_i);
       cubic_polys.push(poly.compress());
     }
+
+    let dur = start.elapsed();
+    println!("time taken (prove_helper): {:?}", dur);
 
     let mem_claims = mem.final_claims();
     let outer_claims = outer.final_claims();
@@ -1335,6 +1340,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     U: &RelaxedR1CSInstance<E>,
     W: &RelaxedR1CSWitness<E>,
   ) -> Result<Self, NovaError> {
+    println!("prove");
     // pad the R1CSShape
     let S = S.pad();
     // sanity check that R1CSShape has all required size characteristics
@@ -1421,6 +1427,339 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let gamma = transcript.squeeze(b"g")?;
     let r = transcript.squeeze(b"r")?;
 
+    let start = std::time::Instant::now();
+    let ((mut outer_sc_inst, mut inner_sc_inst), mem_res) = rayon::join(
+      || {
+        // a sum-check instance to prove the first claim
+        let outer_sc_inst = OuterSumcheckInstance_dep::new(
+          EqPolynomial::new(tau.clone()).evals(),
+          Az.clone(),
+          Bz.clone(),
+          (0..Cz.len())
+            .map(|i| U.u * Cz[i] + E[i])
+            .collect::<Vec<E::Scalar>>(),
+          w.p.clone(), // Mz = Az + r * Bz + r^2 * Cz
+          &u.e,        // eval_Az_at_tau + r * eval_Bz_at_tau + r^2 * eval_Cz_at_tau
+        );
+
+        // a sum-check instance to prove the second claim
+        let val = zip_with!(
+          par_iter,
+          (pk.S_repr.val_A, pk.S_repr.val_B, pk.S_repr.val_C),
+          |v_a, v_b, v_c| *v_a + c * *v_b + c * c * *v_c
+        )
+        .collect::<Vec<E::Scalar>>();
+        let inner_sc_inst = InnerSumcheckInstance {
+          claim: eval_Az_at_tau + c * eval_Bz_at_tau + c * c * eval_Cz_at_tau,
+          poly_L_row: MultilinearPolynomial::new(L_row.clone()),
+          poly_L_col: MultilinearPolynomial::new(L_col.clone()),
+          poly_val: MultilinearPolynomial::new(val),
+        };
+
+        (outer_sc_inst, inner_sc_inst)
+      },
+      || {
+        // a third sum-check instance to prove the read-only memory claim
+        // we now need to prove that L_row and L_col are well-formed
+
+        // hash the tuples of (addr,val) memory contents and read responses into a single field element using `hash_func`
+
+        let (comm_mem_oracles, mem_oracles, mem_aux) =
+          MemorySumcheckInstance::<E>::compute_oracles(
+            ck,
+            &r,
+            &gamma,
+            &mem_row,
+            &pk.S_repr.row,
+            &L_row,
+            &pk.S_repr.ts_row,
+            &mem_col,
+            &pk.S_repr.col,
+            &L_col,
+            &pk.S_repr.ts_col,
+          )?;
+        // absorb the commitments
+        transcript.absorb(b"l", &comm_mem_oracles.as_slice());
+
+        let rho = (0..num_rounds_sc)
+          .map(|_| transcript.squeeze(b"r"))
+          .collect::<Result<Vec<_>, NovaError>>()?;
+        let poly_eq: MultilinearPolynomial<<E as Engine>::Scalar> =
+          MultilinearPolynomial::new(EqPolynomial::new(rho).evals());
+
+        Ok::<_, NovaError>((
+          MemorySumcheckInstance::new(
+            mem_oracles.clone(),
+            mem_aux,
+            poly_eq.Z,
+            pk.S_repr.ts_row.clone(),
+            pk.S_repr.ts_col.clone(),
+          ),
+          comm_mem_oracles,
+          mem_oracles,
+        ))
+      },
+    );
+    let (mut mem_sc_inst, comm_mem_oracles, mem_oracles) = mem_res?;
+
+    let dur = start.elapsed();
+    println!("time taken (prover inst): {:?}", dur);
+
+    let mut witness_sc_inst = WitnessBoundSumcheck::new(tau, W.clone(), S.num_vars);
+
+    let (sc, rand_sc, claims_mem, claims_outer, claims_inner, claims_witness) = Self::prove_helper(
+      &mut mem_sc_inst,
+      &mut outer_sc_inst,
+      &mut inner_sc_inst,
+      &mut witness_sc_inst,
+      &mut transcript,
+    )?;
+
+    // claims from the end of the sum-check
+    let eval_Az = claims_outer[0][0];
+    let eval_Bz = claims_outer[0][1];
+
+    let eval_L_row = claims_inner[0][0];
+    let eval_L_col = claims_inner[0][1];
+
+    let eval_t_plus_r_inv_row = claims_mem[0][0];
+    let eval_w_plus_r_inv_row = claims_mem[0][1];
+    let eval_ts_row = claims_mem[0][2];
+
+    let eval_t_plus_r_inv_col = claims_mem[1][0];
+    let eval_w_plus_r_inv_col = claims_mem[1][1];
+    let eval_ts_col = claims_mem[1][2];
+    let eval_W = claims_witness[0][0];
+
+    // compute the remaining claims that did not come for free from the sum-check prover
+    let (eval_Cz, eval_E, eval_val_A, eval_val_B, eval_val_C, eval_row, eval_col) = {
+      let e = [
+        &Cz,
+        &E,
+        &pk.S_repr.val_A,
+        &pk.S_repr.val_B,
+        &pk.S_repr.val_C,
+        &pk.S_repr.row,
+        &pk.S_repr.col,
+      ]
+      .into_par_iter()
+      .map(|p| MultilinearPolynomial::evaluate_with(p, &rand_sc))
+      .collect::<Vec<E::Scalar>>();
+      (e[0], e[1], e[2], e[3], e[4], e[5], e[6])
+    };
+
+    // all the evaluations are at rand_sc, we can fold them into one claim
+    let eval_vec = vec![
+      eval_W,
+      eval_Az,
+      eval_Bz,
+      eval_Cz,
+      eval_E,
+      eval_L_row,
+      eval_L_col,
+      eval_val_A,
+      eval_val_B,
+      eval_val_C,
+      eval_t_plus_r_inv_row,
+      eval_row,
+      eval_w_plus_r_inv_row,
+      eval_ts_row,
+      eval_t_plus_r_inv_col,
+      eval_col,
+      eval_w_plus_r_inv_col,
+      eval_ts_col,
+    ]
+    .into_iter()
+    .collect::<Vec<E::Scalar>>();
+
+    let comm_vec = [
+      U.comm_W,
+      comm_Az,
+      comm_Bz,
+      comm_Cz,
+      U.comm_E,
+      comm_L_row,
+      comm_L_col,
+      pk.S_comm.comm_val_A,
+      pk.S_comm.comm_val_B,
+      pk.S_comm.comm_val_C,
+      comm_mem_oracles[0],
+      pk.S_comm.comm_row,
+      comm_mem_oracles[1],
+      pk.S_comm.comm_ts_row,
+      comm_mem_oracles[2],
+      pk.S_comm.comm_col,
+      comm_mem_oracles[3],
+      pk.S_comm.comm_ts_col,
+    ];
+    let poly_vec = [
+      &W,
+      &Az,
+      &Bz,
+      &Cz,
+      &E,
+      &L_row,
+      &L_col,
+      &pk.S_repr.val_A,
+      &pk.S_repr.val_B,
+      &pk.S_repr.val_C,
+      mem_oracles[0].as_ref(),
+      &pk.S_repr.row,
+      mem_oracles[1].as_ref(),
+      &pk.S_repr.ts_row,
+      mem_oracles[2].as_ref(),
+      &pk.S_repr.col,
+      mem_oracles[3].as_ref(),
+      &pk.S_repr.ts_col,
+    ];
+    transcript.absorb(b"e", &eval_vec.as_slice()); // comm_vec is already in the transcript
+    let c = transcript.squeeze(b"c")?;
+    let w: PolyEvalWitness<E> = PolyEvalWitness::batch(&poly_vec, &c);
+    let u: PolyEvalInstance<E> = PolyEvalInstance::batch(&comm_vec, &rand_sc, &eval_vec, &c);
+
+    let eval_arg = EE::prove(ck, &pk.pk_ee, &mut transcript, &u.c, &w.p, &rand_sc, &u.e)?;
+
+    Ok(RelaxedR1CSSNARK {
+      comm_Az,
+      comm_Bz,
+      comm_Cz,
+      comm_L_row,
+      comm_L_col,
+
+      comm_t_plus_r_inv_row: comm_mem_oracles[0],
+      comm_w_plus_r_inv_row: comm_mem_oracles[1],
+      comm_t_plus_r_inv_col: comm_mem_oracles[2],
+      comm_w_plus_r_inv_col: comm_mem_oracles[3],
+
+      eval_Az_at_tau,
+      eval_Bz_at_tau,
+      eval_Cz_at_tau,
+
+      sc,
+
+      eval_Az,
+      eval_Bz,
+      eval_Cz,
+      eval_E,
+      eval_L_row,
+      eval_L_col,
+      eval_val_A,
+      eval_val_B,
+      eval_val_C,
+
+      eval_W,
+
+      eval_t_plus_r_inv_row,
+      eval_row,
+      eval_w_plus_r_inv_row,
+      eval_ts_row,
+
+      eval_col,
+      eval_t_plus_r_inv_col,
+      eval_w_plus_r_inv_col,
+      eval_ts_col,
+
+      eval_arg,
+    })
+  }
+
+  /// produces a succinct proof of satisfiability of a `RelaxedR1CS` instance
+  fn prove2(
+    ck: &CommitmentKey<E>,
+    pk: &Self::ProverKey,
+    S: &R1CSShape<E>,
+    U: &RelaxedR1CSInstance<E>,
+    W: &RelaxedR1CSWitness<E>,
+  ) -> Result<Self, NovaError> {
+    println!("prove2");
+
+    // pad the R1CSShape
+    let S = S.pad();
+    // sanity check that R1CSShape has all required size characteristics
+    assert!(S.is_regular_shape());
+
+    let W = W.pad(&S); // pad the witness
+    let mut transcript = E::TE::new(b"RelaxedR1CSSNARK");
+
+    // append the verifier key (which includes commitment to R1CS matrices) and the RelaxedR1CSInstance to the transcript
+    transcript.absorb(b"vk", &pk.vk_digest);
+    transcript.absorb(b"U", U);
+
+    // compute the full satisfying assignment by concatenating W.W, U.u, and U.X
+    let z = [W.W.clone(), vec![U.u], U.X.clone()].concat();
+
+    // compute Az, Bz, Cz
+    let (mut Az, mut Bz, mut Cz) = S.multiply_vec(&z)?;
+
+    // commit to Az, Bz, Cz
+    let (comm_Az, (comm_Bz, comm_Cz)) = rayon::join(
+      || E::CE::commit(ck, &Az, &E::Scalar::ZERO),
+      || {
+        rayon::join(
+          || E::CE::commit(ck, &Bz, &E::Scalar::ZERO),
+          || E::CE::commit(ck, &Cz, &E::Scalar::ZERO),
+        )
+      },
+    );
+
+    transcript.absorb(b"c", &[comm_Az, comm_Bz, comm_Cz].as_slice());
+
+    // number of rounds of sum-check
+    let num_rounds_sc = pk.S_repr.N.log_2();
+    let tau = (0..num_rounds_sc)
+      .map(|_| transcript.squeeze(b"t"))
+      .collect::<Result<Vec<_>, NovaError>>()?;
+
+    // (1) send commitments to Az, Bz, and Cz along with their evaluations at tau
+    let (Az, Bz, Cz, W, E) = {
+      Az.resize(pk.S_repr.N, E::Scalar::ZERO);
+      Bz.resize(pk.S_repr.N, E::Scalar::ZERO);
+      Cz.resize(pk.S_repr.N, E::Scalar::ZERO);
+      let E = padded::<E>(&W.E, pk.S_repr.N, &E::Scalar::ZERO);
+      let W = padded::<E>(&W.W, pk.S_repr.N, &E::Scalar::ZERO);
+
+      (Az, Bz, Cz, W, E)
+    };
+    let (eval_Az_at_tau, eval_Bz_at_tau, eval_Cz_at_tau) = {
+      let evals_at_tau = [&Az, &Bz, &Cz]
+        .into_par_iter()
+        .map(|p| MultilinearPolynomial::evaluate_with(p, &tau))
+        .collect::<Vec<E::Scalar>>();
+      (evals_at_tau[0], evals_at_tau[1], evals_at_tau[2])
+    };
+
+    // (2) send commitments to the following two oracles
+    // L_row(i) = eq(tau, row(i)) for all i
+    // L_col(i) = z(col(i)) for all i
+    let (mem_row, mem_col, L_row, L_col) = pk.S_repr.evaluation_oracles(&S, &tau, &z);
+    let (comm_L_row, comm_L_col) = rayon::join(
+      || E::CE::commit(ck, &L_row, &E::Scalar::ZERO),
+      || E::CE::commit(ck, &L_col, &E::Scalar::ZERO),
+    );
+
+    // since all the three polynomials are opened at tau,
+    // we can combine them into a single polynomial opened at tau
+    let eval_vec = vec![eval_Az_at_tau, eval_Bz_at_tau, eval_Cz_at_tau];
+
+    // absorb the claimed evaluations into the transcript
+    transcript.absorb(b"e", &eval_vec.as_slice());
+    // absorb commitments to L_row and L_col in the transcript
+    transcript.absorb(b"e", &vec![comm_L_row, comm_L_col].as_slice());
+    let comm_vec = vec![comm_Az, comm_Bz, comm_Cz];
+    let poly_vec = vec![&Az, &Bz, &Cz];
+    let c = transcript.squeeze(b"c")?;
+    let w: PolyEvalWitness<E> = PolyEvalWitness::batch(&poly_vec, &c);
+    let u: PolyEvalInstance<E> = PolyEvalInstance::batch(&comm_vec, &tau, &eval_vec, &c);
+
+    // we now need to prove four claims
+    // (1) 0 = \sum_x poly_tau(x) * (poly_Az(x) * poly_Bz(x) - poly_uCz_E(x)), and eval_Az_at_tau + r * eval_Bz_at_tau + r^2 * eval_Cz_at_tau = (Az+r*Bz+r^2*Cz)(tau)
+    // (2) eval_Az_at_tau + c * eval_Bz_at_tau + c^2 * eval_Cz_at_tau = \sum_y L_row(y) * (val_A(y) + c * val_B(y) + c^2 * val_C(y)) * L_col(y)
+    // (3) L_row(i) = eq(tau, row(i)) and L_col(i) = z(col(i))
+    // (4) Check that the witness polynomial W is well-formed e.g., it is padded with only zeros
+    let gamma = transcript.squeeze(b"g")?;
+    let r = transcript.squeeze(b"r")?;
+
+    let start = std::time::Instant::now();
     let ((mut outer_sc_inst, mut inner_sc_inst), mem_res) = rayon::join(
       || {
         // a sum-check instance to prove the first claim
@@ -1493,8 +1832,10 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
         ))
       },
     );
-
     let (mut mem_sc_inst, comm_mem_oracles, mem_oracles) = mem_res?;
+
+    let dur = start.elapsed();
+    println!("time taken (new prover inst): {:?}", dur);
 
     let mut witness_sc_inst = WitnessBoundSumcheck::new(tau, W.clone(), S.num_vars);
 
@@ -2012,79 +2353,85 @@ mod batch_invert_tests {
       type EE = EvaluationEngine<E>;
 
       // Create test parameters
-      let l = 18 as usize; // Small size for testing
-      let half_l = l / 2;
-      let n = (1 << l) as usize;
+      // let l = 24 as usize; // Small size for testing
+      for l in (1..=29) {
+        println!("l: {}", l);
+        let half_l = l / 2;
+        let n = (1 << l) as usize;
 
-      // Generate random test data
-      let mut rng = OsRng;
-      let Az: Vec<<E as Engine>::Scalar> = (0..n)
-        .map(|_| <E as Engine>::Scalar::random(&mut rng))
-        .collect();
-      let Bz: Vec<<E as Engine>::Scalar> = (0..n)
-        .map(|_| <E as Engine>::Scalar::random(&mut rng))
-        .collect();
-      let uCz_E: Vec<<E as Engine>::Scalar> = (0..n)
-        .map(|_| <E as Engine>::Scalar::random(&mut rng))
-        .collect();
-      let Mz: Vec<<E as Engine>::Scalar> = (0..n)
-        .map(|_| <E as Engine>::Scalar::random(&mut rng))
-        .collect();
+        // Generate random test data
+        let Az: Vec<<E as Engine>::Scalar> = (0..n)
+          .into_par_iter()
+          .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+          .collect();
+        let Bz: Vec<<E as Engine>::Scalar> = (0..n)
+          .into_par_iter()
+          .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+          .collect();
+        let uCz_E: Vec<<E as Engine>::Scalar> = (0..n)
+          .into_par_iter()
+          .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+          .collect();
+        let Mz: Vec<<E as Engine>::Scalar> = (0..n)
+          .into_par_iter()
+          .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+          .collect();
 
-      // Generate random tau point
-      let tau: Vec<<E as Engine>::Scalar> = (0..l)
-        .map(|_| <E as Engine>::Scalar::random(&mut rng))
-        .collect();
+        // Generate random tau point
+        let tau: Vec<<E as Engine>::Scalar> = (0..l)
+          .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+          .collect();
 
-      // Compute eval_Mz_at_tau
-      let poly_Mz = MultilinearPolynomial::new(Mz.clone());
-      let eval_Mz_at_tau = poly_Mz.evaluate(&tau);
+        // Compute eval_Mz_at_tau
+        let poly_Mz = MultilinearPolynomial::new(Mz.clone());
+        let eval_Mz_at_tau = poly_Mz.evaluate(&tau);
 
-      let challenges = (0..l)
-        .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
-        .collect::<Vec<_>>();
+        let challenges = (0..l)
+          .map(|_| <E as Engine>::Scalar::random(&mut OsRng))
+          .collect::<Vec<_>>();
 
-      // Create OuterSumcheckInstance
-      let start = Instant::now();
-      let mut instance = OuterSumcheckInstance::<E>::new(
-        tau.clone(),
-        Az.clone(),
-        Bz.clone(),
-        uCz_E.clone(),
-        Mz.clone(),
-        &eval_Mz_at_tau,
-      );
+        // Create OuterSumcheckInstance
+        let start = Instant::now();
+        let mut instance = OuterSumcheckInstance::<E>::new(
+          tau.clone(),
+          Az.clone(),
+          Bz.clone(),
+          uCz_E.clone(),
+          Mz.clone(),
+          &eval_Mz_at_tau,
+        );
 
-      let mut res_old = vec![];
+        let mut res_old = vec![];
 
-      for round in 1..=l {
-        let evals = instance.evaluation_points().clone();
-        instance.bound(&challenges[round - 1]);
-        res_old.push(evals);
+        for round in 1..=l {
+          let evals = instance.evaluation_points().clone();
+          instance.bound(&challenges[round - 1]);
+          res_old.push(evals);
+        }
+        let dur = start.elapsed();
+        println!("time taken (new): {:?}", dur);
+
+        let start = Instant::now();
+        let mut instance = OuterSumcheckInstance_dep::<E>::new(
+          EqPolynomial::new(tau.clone()).evals(),
+          Az.clone(),
+          Bz.clone(),
+          uCz_E.clone(),
+          Mz.clone(),
+          &eval_Mz_at_tau,
+        );
+
+        let mut res_new = vec![];
+        for round in 1..=l {
+          let evals = instance.evaluation_points().clone();
+          instance.bound(&challenges[round - 1]);
+          res_new.push(evals);
+        }
+        let dur = start.elapsed();
+        println!("time taken (dep): {:?}", dur);
+
+        assert_eq!(res_old, res_new);
       }
-      let dur = start.elapsed();
-      println!("time taken (new): {:?}", dur);
-
-      let start = Instant::now();
-      let mut instance = OuterSumcheckInstance_dep::<E>::new(
-        EqPolynomial::new(tau.clone()).evals(),
-        Az.clone(),
-        Bz.clone(),
-        uCz_E.clone(),
-        Mz.clone(),
-        &eval_Mz_at_tau,
-      );
-
-      let mut res_new = vec![];
-      for round in 1..=l {
-        let evals = instance.evaluation_points().clone();
-        instance.bound(&challenges[round - 1]);
-        res_new.push(evals);
-      }
-      let dur = start.elapsed();
-      println!("time taken (dep): {:?}", dur);
-
-      assert_eq!(res_old, res_new);
     }
   }
 }
