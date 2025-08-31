@@ -347,7 +347,7 @@ impl<E: Engine> MemorySumcheckInstance<E> {
   ///            = eq(tau)[row[i]] * gamma + addr_row[i]
   ///   T_col[i] = mem_col[i]      * gamma + i
   ///            = z[i]            * gamma + i
-  ///   W_col[i] = L_col[i]     * gamma + addr_col[i]
+  ///   W_col[i] = L_col[i]        * gamma + addr_col[i]
   ///            = z[col[i]]       * gamma + addr_col[i]
   /// and
   ///   TS_row, TS_col are integer-valued vectors representing the number of reads

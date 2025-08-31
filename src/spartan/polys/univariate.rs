@@ -18,7 +18,7 @@ pub struct UniPoly<Scalar: PrimeField> {
 // ax^3 + bx^2 + cx + d stored as vec![d, c, a]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompressedUniPoly<Scalar: PrimeField> {
-  coeffs_except_linear_term: Vec<Scalar>,
+  pub coeffs_except_linear_term: Vec<Scalar>,
 }
 
 impl<Scalar: PrimeField> UniPoly<Scalar> {

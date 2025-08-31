@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::{
   errors::NovaError,
   spartan::{
@@ -39,7 +38,7 @@ pub trait SumcheckEngine<E: Engine>: Send + Sync {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub(crate) struct SumcheckProof<E: Engine> {
-  compressed_polys: Vec<CompressedUniPoly<E::Scalar>>,
+  pub compressed_polys: Vec<CompressedUniPoly<E::Scalar>>,
 }
 
 impl<E: Engine> SumcheckProof<E> {
@@ -449,7 +448,7 @@ pub(crate) mod eq_sumcheck {
     taus: Vec<E::Scalar>,
     eval_eq_left: E::Scalar,
     poly_eq_left: Vec<Vec<E::Scalar>>,
-    poly_eq_right: Vec<Vec<E::Scalar>>,
+    pub poly_eq_right: Vec<Vec<E::Scalar>>,
     eq_tau_0_2_3: Vec<(E::Scalar, E::Scalar, E::Scalar)>,
   }
 
@@ -582,7 +581,7 @@ pub(crate) mod eq_sumcheck {
       (eval_0, eval_2, eval_3)
     }
 
-    /// Evaluate poly_A * poly_C + poly_B * poly_D + gamma * poly_C * poly_D
+    /// Evaluate poly_A * poly_D + poly_B * poly_C + gamma * poly_C * poly_D
     #[inline]
     pub fn evaluation_points_cubic_with_four_inputs(
       &self,
@@ -708,70 +707,6 @@ pub(crate) mod eq_sumcheck {
 
             let (eval_0, eval_2, eval_3) =
               eval_one_case_cubic_two_inputs(zero_a, one_a, zero_b, one_b);
-
-            let factor = poly_eq_right;
-
-            (eval_0 * factor, eval_2 * factor, eval_3 * factor)
-          })
-          .reduce(
-            || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
-            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
-          )
-      };
-
-      self.update_evals(&mut eval_0, &mut eval_2, &mut eval_3);
-
-      (eval_0, eval_2, eval_3)
-    }
-
-    /// Evaluate poly_A * poly_B
-    #[inline]
-    pub fn evaluation_points_cubic_cross_term(
-      &self,
-      poly_A: &MultilinearPolynomial<E::Scalar>,
-      poly_B: &MultilinearPolynomial<E::Scalar>,
-    ) -> (E::Scalar, E::Scalar, E::Scalar) {
-      debug_assert_eq!(poly_A.len() % 2, 0);
-
-      let in_first_half = self.round < self.first_half;
-
-      let half_p = poly_A.Z.len() / 2;
-
-      let [zip_A, zip_B] = split_and_zip([&poly_A.Z, &poly_B.Z], half_p);
-
-      let (mut eval_0, mut eval_2, mut eval_3) = if in_first_half {
-        let (poly_eq_left, poly_eq_right, second_half, low_mask) = self.poly_eqs_first_half();
-
-        zip_A
-          .zip_eq(zip_B)
-          .enumerate()
-          .map(|(id, (a, b))| {
-            let (zero_a, one_a) = a;
-            let (zero_b, one_b) = b;
-
-            let (eval_0, eval_2, eval_3) =
-              eval_one_case_cubic_cross_term(zero_a, one_a, zero_b, one_b);
-
-            let factor = poly_eq_left[id >> second_half] * poly_eq_right[id & low_mask];
-
-            (eval_0 * factor, eval_2 * factor, eval_3 * factor)
-          })
-          .reduce(
-            || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
-            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
-          )
-      } else {
-        let poly_eq_right = self.poly_eq_right_last_half().par_iter();
-
-        zip_A
-          .zip_eq(zip_B)
-          .zip_eq(poly_eq_right)
-          .map(|((a, b), poly_eq_right)| {
-            let (zero_a, one_a) = a;
-            let (zero_b, one_b) = b;
-
-            let (eval_0, eval_2, eval_3) =
-              eval_one_case_cubic_cross_term(zero_a, one_a, zero_b, one_b);
 
             let factor = poly_eq_right;
 
@@ -939,33 +874,6 @@ pub(crate) mod eq_sumcheck {
   }
 
   #[inline]
-  fn eval_one_case_cubic_cross_term<Scalar: PrimeField>(
-    zero_a: &Scalar,
-    one_a: &Scalar,
-    zero_b: &Scalar,
-    one_b: &Scalar,
-  ) -> (Scalar, Scalar, Scalar) {
-    let eval_0 = *zero_a * *zero_b;
-
-    let double_one_a = one_a.double();
-    let double_one_b = one_b.double();
-
-    let eval_2 = {
-      let point_a = double_one_a - *zero_a;
-      let point_b = double_one_b - *zero_b;
-      point_a * point_b
-    };
-
-    let eval_3 = {
-      let point_a = double_one_a + one_a - zero_a.double();
-      let point_b = double_one_b + one_b - zero_b.double();
-      point_a * point_b
-    };
-
-    (eval_0, eval_2, eval_3)
-  }
-
-  #[inline]
   fn eval_one_case_cubic_three_inputs<Scalar: PrimeField>(
     zero_a: &Scalar,
     one_a: &Scalar,
@@ -1010,7 +918,7 @@ pub(crate) mod eq_sumcheck {
     one_d: &Scalar,
     gamma: &Scalar,
   ) -> (Scalar, Scalar, Scalar) {
-    let eval_0 = *zero_a * *zero_c + *zero_b * *zero_d + *zero_c * *zero_d * gamma;
+    let eval_0 = *zero_a * *zero_d + *zero_b * *zero_c + *zero_c * *zero_d * gamma;
 
     let double_one_a = one_a.double();
     let double_one_b = one_b.double();
@@ -1023,7 +931,7 @@ pub(crate) mod eq_sumcheck {
       let point_c = double_one_c - *zero_c;
       let point_d = double_one_d - *zero_d;
 
-      point_a * point_c + point_b * point_d + point_c * point_d * gamma
+      point_a * point_d + point_b * point_c + point_c * point_d * gamma
     };
 
     let eval_3 = {
@@ -1031,7 +939,7 @@ pub(crate) mod eq_sumcheck {
       let point_b = double_one_b + one_b - zero_b.double();
       let point_c = double_one_c + one_c - zero_c.double();
       let point_d = double_one_d + one_d - zero_d.double();
-      point_a * point_c + point_b * point_d + point_c * point_d * gamma
+      point_a * point_d + point_b * point_c + point_c * point_d * gamma
     };
 
     (eval_0, eval_2, eval_3)
