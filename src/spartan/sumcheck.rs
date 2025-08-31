@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::{
   errors::NovaError,
   spartan::{
@@ -581,6 +582,84 @@ pub(crate) mod eq_sumcheck {
       (eval_0, eval_2, eval_3)
     }
 
+    /// Evaluate poly_A * poly_C + poly_B * poly_D + gamma * poly_C * poly_D
+    #[inline]
+    pub fn evaluation_points_cubic_with_four_inputs(
+      &self,
+      poly_A: &MultilinearPolynomial<E::Scalar>,
+      poly_B: &MultilinearPolynomial<E::Scalar>,
+      poly_C: &MultilinearPolynomial<E::Scalar>,
+      poly_D: &MultilinearPolynomial<E::Scalar>,
+      gamma: &E::Scalar,
+    ) -> (E::Scalar, E::Scalar, E::Scalar) {
+      debug_assert_eq!(poly_A.len() % 2, 0);
+
+      let in_first_half = self.round < self.first_half;
+
+      let half_p = poly_A.Z.len() / 2;
+
+      let [zip_A, zip_B, zip_C, zip_D] =
+        split_and_zip([&poly_A.Z, &poly_B.Z, &poly_C.Z, &poly_D.Z], half_p);
+
+      let (mut eval_0, mut eval_2, mut eval_3) = if in_first_half {
+        let (poly_eq_left, poly_eq_right, second_half, low_mask) = self.poly_eqs_first_half();
+
+        zip_A
+          .zip_eq(zip_B)
+          .zip_eq(zip_C)
+          .zip_eq(zip_D)
+          .enumerate()
+          .map(|(id, (((a, b), c), d))| {
+            let (zero_a, one_a) = a;
+            let (zero_b, one_b) = b;
+            let (zero_c, one_c) = c;
+            let (zero_d, one_d) = d;
+
+            let (eval_0, eval_2, eval_3) = eval_one_case_cubic_four_inputs(
+              zero_a, one_a, zero_b, one_b, zero_c, one_c, zero_d, one_d, &gamma,
+            );
+
+            let factor = poly_eq_left[id >> second_half] * poly_eq_right[id & low_mask];
+
+            (eval_0 * factor, eval_2 * factor, eval_3 * factor)
+          })
+          .reduce(
+            || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+          )
+      } else {
+        let poly_eq_right = self.poly_eq_right_last_half().par_iter();
+
+        zip_A
+          .zip_eq(zip_B)
+          .zip_eq(zip_C)
+          .zip_eq(zip_D)
+          .zip_eq(poly_eq_right)
+          .map(|((((a, b), c), d), poly_eq_right)| {
+            let (zero_a, one_a) = a;
+            let (zero_b, one_b) = b;
+            let (zero_c, one_c) = c;
+            let (zero_d, one_d) = d;
+
+            let (eval_0, eval_2, eval_3) = eval_one_case_cubic_four_inputs(
+              zero_a, one_a, zero_b, one_b, zero_c, one_c, zero_d, one_d, &gamma,
+            );
+
+            let factor = poly_eq_right;
+
+            (eval_0 * factor, eval_2 * factor, eval_3 * factor)
+          })
+          .reduce(
+            || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+          )
+      };
+
+      self.update_evals(&mut eval_0, &mut eval_2, &mut eval_3);
+
+      (eval_0, eval_2, eval_3)
+    }
+
     /// Evaluate poly_A * poly_B - ONE
     #[inline]
     pub fn evaluation_points_cubic_with_two_inputs(
@@ -914,6 +993,45 @@ pub(crate) mod eq_sumcheck {
       let point_b = double_one_b + one_b - zero_b.double();
       let point_c = double_one_c + one_c - zero_c.double();
       point_a * point_b - point_c
+    };
+
+    (eval_0, eval_2, eval_3)
+  }
+
+  #[inline]
+  fn eval_one_case_cubic_four_inputs<Scalar: PrimeField>(
+    zero_a: &Scalar,
+    one_a: &Scalar,
+    zero_b: &Scalar,
+    one_b: &Scalar,
+    zero_c: &Scalar,
+    one_c: &Scalar,
+    zero_d: &Scalar,
+    one_d: &Scalar,
+    gamma: &Scalar,
+  ) -> (Scalar, Scalar, Scalar) {
+    let eval_0 = *zero_a * *zero_c + *zero_b * *zero_d + *zero_c * *zero_d * gamma;
+
+    let double_one_a = one_a.double();
+    let double_one_b = one_b.double();
+    let double_one_c = one_c.double();
+    let double_one_d = one_d.double();
+
+    let eval_2 = {
+      let point_a = double_one_a - *zero_a;
+      let point_b = double_one_b - *zero_b;
+      let point_c = double_one_c - *zero_c;
+      let point_d = double_one_d - *zero_d;
+
+      point_a * point_c + point_b * point_d + point_c * point_d * gamma
+    };
+
+    let eval_3 = {
+      let point_a = double_one_a + one_a - zero_a.double();
+      let point_b = double_one_b + one_b - zero_b.double();
+      let point_c = double_one_c + one_c - zero_c.double();
+      let point_d = double_one_d + one_d - zero_d.double();
+      point_a * point_c + point_b * point_d + point_c * point_d * gamma
     };
 
     (eval_0, eval_2, eval_3)

@@ -83,37 +83,39 @@ fn verify_gkr<E: Engine>(
   transcript: &mut E::TE,
 ) -> Result<(), NovaError> {
   let mut tau: Vec<E::Scalar> = vec![];
-  let mut p = claims[0].p0;
-  let mut q = claims[0].q0;
+  let mut p_claim = claims[0].p0;
+  let mut q_claim = claims[0].q0;
 
   dbg!(claims.len());
   dbg!(proofs.len());
 
   for layer in 0..proofs.len() {
-    let proof = &proofs[layer];
-
     // rlc of p and q
     let rlc_coeff = transcript.squeeze(b"r")?;
 
-    let claim = p + q * rlc_coeff;
+    let claim = p_claim + q_claim * rlc_coeff;
 
-    let (actual_final_eval, r) = proof.verify(claim, layer, 3, transcript)?;
+    let proof = &proofs[layer];
+
+    let (actual_final_eval, rs) = proof.verify(claim, layer, 3, transcript)?;
 
     let eq_poly = EqPolynomial::new(tau.clone());
 
-    let eval_eq = eq_poly.evaluate(&r);
+    let eval_eq = eq_poly.evaluate(&rs);
 
     let LogupGKRLayerClaim { p0, p1, q0, q1 } = claims[layer + 1];
 
-    let expected_final_eval = eval_eq * (p0 * q1 + p1 * q0 + rlc_coeff * (q0 * q1));
+    let expected_final_eval = eval_eq * (p0 * q1 + p1 * q0 + rlc_coeff * q0 * q1);
 
     println!(
-      "verify layer: {}, rlc_coeff: {:?},  eq: {:?},actual_final_eval: {:?}, expected_final_eval: {:?}",
+      "verify layer: {}, rlc_coeff: {:?},  eq: {:?},actual_final_eval: {:?}, expected_final_eval: {:?}, tau: {:?}, claim: {:?}",
       layer + 1,
       rlc_coeff,
       eval_eq,
       actual_final_eval,
-      expected_final_eval
+      expected_final_eval,
+      tau,
+      claim,
     );
 
     assert_eq!(actual_final_eval, expected_final_eval);
@@ -124,10 +126,11 @@ fn verify_gkr<E: Engine>(
 
     let r0 = transcript.squeeze(b"r")?;
 
-    tau = [vec![r0], r].concat();
+    tau = [vec![r0], rs].concat();
     let one = E::Scalar::ONE;
-    p = p0 * (one - r0) + p1 * r0;
-    q = q0 * (one - r0) + q1 * r0;
+    dbg!(r0);
+    p_claim = p0 * (one - r0) + p1 * r0;
+    q_claim = q0 * (one - r0) + q1 * r0;
   }
 
   Ok(())
@@ -163,9 +166,12 @@ fn prove_gkr<E: Engine>(
   for layer in 1..p_trace.len() {
     let rlc_coeff = transcript.squeeze(b"r")?;
 
-    println!("layer: {}, rlc_coeff: {:?}", layer, rlc_coeff);
-
     let claim = p_claim + q_claim * rlc_coeff;
+
+    println!(
+      "layer: {}, rlc_coeff: {:?}, claim: {:?}",
+      layer, rlc_coeff, claim
+    );
 
     // if layer > 1 {
     //   let LogupGKRLayerClaim { p0, p1, q0, q1 } = claims.last().unwrap();
@@ -182,6 +188,8 @@ fn prove_gkr<E: Engine>(
 
     let mut sc_inst = EqSumCheckInstance::<E>::new(tau.clone());
 
+    assert_eq!(1 << tau.len(), p0.len());
+
     let mut rs = vec![];
     let mut polys = vec![];
 
@@ -189,18 +197,32 @@ fn prove_gkr<E: Engine>(
 
     for round in 0..n.ilog2() as usize {
       dbg!(round);
-      let (eval_point_h_0_0, eval_point_h_2_0, eval_point_h_3_0) =
-        sc_inst.evaluation_points_cubic_cross_term(&p0_polynomial, &q1_polynomial);
+      let (eval_point_h_0, eval_point_h_2, eval_point_h_3) = sc_inst
+        .evaluation_points_cubic_with_four_inputs(
+          &p0_polynomial,
+          &p1_polynomial,
+          &q0_polynomial,
+          &q1_polynomial,
+          &rlc_coeff,
+        );
 
-      let (eval_point_h_0_1, eval_point_h_2_1, eval_point_h_3_1) =
-        sc_inst.evaluation_points_cubic_cross_term(&p1_polynomial, &q0_polynomial);
+      {
+        let (eval_point_h_0_0, eval_point_h_2_0, eval_point_h_3_0) =
+          sc_inst.evaluation_points_cubic_cross_term(&p0_polynomial, &q1_polynomial);
+        let (eval_point_h_0_1, eval_point_h_2_1, eval_point_h_3_1) =
+          sc_inst.evaluation_points_cubic_cross_term(&p1_polynomial, &q0_polynomial);
+        let (eval_point_h_0_2, eval_point_h_2_2, eval_point_h_3_2) =
+          sc_inst.evaluation_points_cubic_cross_term(&q0_polynomial, &q1_polynomial);
 
-      let (eval_point_h_0_2, eval_point_h_2_2, eval_point_h_3_2) =
-        sc_inst.evaluation_points_cubic_cross_term(&q0_polynomial, &q1_polynomial);
+        let eval_point_h_0_e = eval_point_h_0_0 + eval_point_h_0_1 + eval_point_h_0_2 * rlc_coeff;
+        let eval_point_h_2_e = eval_point_h_2_0 + eval_point_h_2_1 + eval_point_h_2_2 * rlc_coeff;
+        let eval_point_h_3_e = eval_point_h_3_0 + eval_point_h_3_1 + eval_point_h_3_2 * rlc_coeff;
 
-      let eval_point_h_0 = eval_point_h_0_0 + eval_point_h_0_1 + eval_point_h_0_2 * rlc_coeff;
-      let eval_point_h_2 = eval_point_h_2_0 + eval_point_h_2_1 + eval_point_h_2_2 * rlc_coeff;
-      let eval_point_h_3 = eval_point_h_3_0 + eval_point_h_3_1 + eval_point_h_3_2 * rlc_coeff;
+        assert_eq!(eval_point_h_0, eval_point_h_0_e);
+        assert_eq!(eval_point_h_2, eval_point_h_2_e);
+        assert_eq!(eval_point_h_3, eval_point_h_3_e);
+      }
+
       let eval_point_h_1 = claim - eval_point_h_0;
 
       let poly = UniPoly::from_evals(&[
@@ -224,9 +246,6 @@ fn prove_gkr<E: Engine>(
       q1_polynomial.bind_poly_var_top(&r);
     }
 
-    let r0 = transcript.squeeze(b"r")?;
-    tau = [vec![r0], rs].concat();
-
     {
       assert_eq!(p0_polynomial.len(), 1);
       assert_eq!(p1_polynomial.len(), 1);
@@ -241,12 +260,23 @@ fn prove_gkr<E: Engine>(
       q1_polynomial[0],
     );
 
+    // {
+    //   let p_claim = p0 * q1 + p1 * q0 + rlc_coeff * (q0 * q1);
+    // }
+
+    let r0 = transcript.squeeze(b"r")?;
+    tau = [vec![r0], rs].concat();
+
+    dbg!(r0);
+
+    println!("tau: {:?}", tau);
+
     proofs.push(SumcheckProof::new(polys));
     claims.push(LogupGKRLayerClaim { p0, p1, q0, q1 });
 
     let one = E::Scalar::ONE;
-    p_claim = p0_polynomial[0] * (one - r0) + p1_polynomial[0] * r0;
-    q_claim = q0_polynomial[0] * (one - r0) + q1_polynomial[0] * r0;
+    p_claim = p0 * (one - r0) + p1 * r0;
+    q_claim = q0 * (one - r0) + q1 * r0;
 
     n *= 2;
   }
