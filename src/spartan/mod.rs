@@ -15,6 +15,8 @@ pub(crate) mod math;
 pub(crate) mod polys;
 pub(crate) mod sumcheck;
 
+mod logup_gkr;
+
 pub use sumcheck::SumcheckEngine;
 
 use crate::{
