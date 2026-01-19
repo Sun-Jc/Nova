@@ -1,14 +1,14 @@
 //! This module provides an implementation of a commitment engine
+#[cfg(feature = "io")]
+use crate::provider::ptau::{read_points, write_points, PtauFileError};
+use crate::traits::evm_serde::EvmCompatSerde;
 use crate::{
   errors::NovaError,
   gadgets::utils::to_bignat_repr,
-  provider::{
-    ptau::{read_points, write_points, PtauFileError},
-    traits::{DlogGroup, DlogGroupExt},
-  },
+  provider::traits::{DlogGroup, DlogGroupExt},
   traits::{
     commitment::{CommitmentEngineTrait, CommitmentTrait, Len},
-    AbsorbInRO2Trait, AbsorbInROTrait, Engine, ROTrait, TranscriptReprTrait,
+    AbsorbInRO2Trait, AbsorbInROTrait, Engine, Group, ROTrait, TranscriptReprTrait,
   },
 };
 use core::{
@@ -21,7 +21,9 @@ use num_integer::Integer;
 use num_traits::ToPrimitive;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
+#[cfg(feature = "io")]
 const KEY_FILE_HEAD: [u8; 12] = *b"PEDERSEN_KEY";
 
 /// A type that holds commitment generators
@@ -44,18 +46,26 @@ where
 }
 
 /// A type that holds blinding generator
+#[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct DerandKey<E: Engine>
 where
   E::GE: DlogGroup,
 {
+  #[serde_as(as = "EvmCompatSerde")]
   h: <E::GE as DlogGroup>::AffineGroupElement,
 }
 
 /// A type that holds a commitment
+#[serde_as]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct Commitment<E: Engine> {
+pub struct Commitment<E: Engine>
+where
+  E::GE: DlogGroup,
+{
+  #[serde_as(as = "EvmCompatSerde")]
   pub(crate) comm: E::GE,
 }
 
@@ -101,13 +111,27 @@ where
 {
   fn absorb_in_ro(&self, ro: &mut E::RO) {
     let (x, y, is_infinity) = self.comm.to_coordinates();
-    ro.absorb(x);
-    ro.absorb(y);
-    ro.absorb(if is_infinity {
-      E::Base::ONE
+    // When B != 0 (true for BN254, Grumpkin, etc.), (0,0) is not on the curve
+    // so we can use it as a canonical representation for infinity.
+    // This saves one field element absorption per point.
+    let (_, b, _, _) = E::GE::group_params();
+    if b != E::Base::ZERO {
+      let (x, y) = if is_infinity {
+        (E::Base::ZERO, E::Base::ZERO)
+      } else {
+        (x, y)
+      };
+      ro.absorb(x);
+      ro.absorb(y);
     } else {
-      E::Base::ZERO
-    });
+      ro.absorb(x);
+      ro.absorb(y);
+      ro.absorb(if is_infinity {
+        E::Base::ONE
+      } else {
+        E::Base::ZERO
+      });
+    }
   }
 }
 
@@ -117,6 +141,13 @@ where
 {
   fn absorb_in_ro2(&self, ro: &mut E::RO2) {
     let (x, y, is_infinity) = self.comm.to_coordinates();
+    // When B != 0, use (0,0) for infinity
+    let (_, b, _, _) = E::GE::group_params();
+    let (x, y) = if b != E::Base::ZERO && is_infinity {
+      (E::Base::ZERO, E::Base::ZERO)
+    } else {
+      (x, y)
+    };
 
     // we have to absorb x and y in big num format
     let limbs_x = to_bignat_repr(&x);
@@ -125,11 +156,14 @@ where
     for limb in limbs_x.iter().chain(limbs_y.iter()) {
       ro.absorb(*limb);
     }
-    ro.absorb(if is_infinity {
-      E::Scalar::ONE
-    } else {
-      E::Scalar::ZERO
-    });
+    // Only absorb is_infinity when B == 0
+    if b == E::Base::ZERO {
+      ro.absorb(if is_infinity {
+        E::Scalar::ONE
+      } else {
+        E::Scalar::ZERO
+      });
+    }
   }
 }
 
@@ -192,12 +226,25 @@ impl<E: Engine> CommitmentKey<E>
 where
   E::GE: DlogGroup,
 {
-  pub fn save_to(&self, writer: &mut impl std::io::Write) -> Result<(), PtauFileError> {
-    writer.write_all(&KEY_FILE_HEAD)?;
-    let mut points = Vec::with_capacity(self.ck.len() + 1);
-    points.push(self.h);
-    points.extend(self.ck.iter().cloned());
-    write_points(writer, points)
+  /// Returns the coordinates of the generator points.
+  ///
+  /// This method extracts the (x, y) coordinates of each generator point
+  /// in the commitment key. This is useful for operations that need direct
+  /// access to the underlying elliptic curve points.
+  ///
+  /// # Panics
+  ///
+  /// Panics if any generator point is the point at infinity.
+  pub fn to_coordinates(&self) -> Vec<(E::Base, E::Base)> {
+    self
+      .ck
+      .iter()
+      .map(|c| {
+        let (x, y, is_infinity) = <E::GE as DlogGroup>::group(c).to_coordinates();
+        assert!(!is_infinity);
+        (x, y)
+      })
+      .collect()
   }
 }
 
@@ -278,6 +325,7 @@ where
     }
   }
 
+  #[cfg(feature = "io")]
   fn load_setup(
     reader: &mut (impl std::io::Read + std::io::Seek),
     _label: &'static [u8],
@@ -300,6 +348,22 @@ where
       ck: second.to_vec(),
       h: first[0],
     })
+  }
+
+  fn ck_to_coordinates(ck: &Self::CommitmentKey) -> Vec<(E::Base, E::Base)> {
+    ck.to_coordinates()
+  }
+
+  #[cfg(feature = "io")]
+  fn save_setup(
+    ck: &Self::CommitmentKey,
+    writer: &mut impl std::io::Write,
+  ) -> Result<(), PtauFileError> {
+    writer.write_all(&KEY_FILE_HEAD)?;
+    let mut points = Vec::with_capacity(ck.ck.len() + 1);
+    points.push(ck.h);
+    points.extend(ck.ck.iter().cloned());
+    write_points(writer, points)
   }
 
   fn commit_sparse_binary(
@@ -430,6 +494,7 @@ where
   }
 }
 
+#[cfg(feature = "io")]
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -447,9 +512,7 @@ mod tests {
 
     let keys = CommitmentEngine::<E>::setup(LABEL, 100);
 
-    keys
-      .save_to(&mut BufWriter::new(File::create(path).unwrap()))
-      .unwrap();
+    CommitmentEngine::save_setup(&keys, &mut BufWriter::new(File::create(path).unwrap())).unwrap();
 
     let keys_read = CommitmentEngine::load_setup(&mut File::open(path).unwrap(), LABEL, 100);
 
