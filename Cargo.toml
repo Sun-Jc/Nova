@@ -78,6 +78,10 @@ harness = false
 name = "sumcheckeq"
 harness = false
 
+[[bench]]
+name = "sparse-commit"
+harness = false
+
 [features]
 default = ["io"]
 flamegraph = ["pprof2/flamegraph", "pprof2/criterion"]

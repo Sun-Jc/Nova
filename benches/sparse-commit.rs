@@ -29,7 +29,14 @@ criterion_main!(sparse_commit);
 const SEED: u64 = 0xDEADBEEF_CAFEBABE;
 
 /// Densities to test (as percentages)
-const DENSITIES: &[u32] = &[5, 10, 25, 50];
+// const DENSITIES: &[u32] = &[5, 10, 25, 50];
+// const START_SIZE: usize = 128;
+// const END_SIZE: usize = 1 << 25;
+// const STEP_LOG_SIZE: usize = 3;
+const DENSITIES: &[u32] = &[6];
+const START_SIZE: usize = 1 << 23;
+const END_SIZE: usize = 1 << 26;
+const STEP_LOG_SIZE: usize = 1;
 
 /// Generate non-zero indices for a boolean vector with specified density.
 /// Returns only the indices where the value is 1.
@@ -63,11 +70,9 @@ fn make_dense_vector(size: usize, non_zero_indices: &[usize]) -> Vec<u8> {
 fn bench_sparse_commit(c: &mut Criterion) {
   type E = Bn256EngineKZG;
 
-  let max_size = 1 << 25;
-
   // Setup commitment key for the maximum size
-  println!("Setting up commitment key for size {}...", max_size);
-  let ck = <E as Engine>::CE::setup(b"sparse_commit_bench", max_size);
+  println!("Setting up commitment key for size {}...", END_SIZE);
+  let ck = <E as Engine>::CE::setup(b"sparse_commit_bench", END_SIZE);
   println!("Commitment key setup complete.");
 
   let zero = <E as Engine>::Scalar::zero();
@@ -76,8 +81,9 @@ fn bench_sparse_commit(c: &mut Criterion) {
   println!("Pre-generating non-zero indices for all configurations...");
 
   // Benchmark across different sizes: 64, 128, 256, ..., up to 1<<25
-  let mut size = 64usize;
-  while size <= max_size {
+  // let mut size = 64usize;
+  let mut size = START_SIZE;
+  while size <= END_SIZE {
     for &density in DENSITIES {
       // Use a combined seed for reproducibility across (size, density) pairs
       let combined_seed = SEED
@@ -126,6 +132,6 @@ fn bench_sparse_commit(c: &mut Criterion) {
     }
 
     // Double twice the size for next iteration
-    size *= 4;
+    size *= 1 << STEP_LOG_SIZE;
   }
 }

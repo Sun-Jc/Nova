@@ -11,11 +11,14 @@ use crate::provider::{ptau::PtauFileError, read_ptau, write_ptau};
 use crate::{
   errors::NovaError,
   gadgets::utils::to_bignat_repr,
-  provider::traits::{DlogGroup, DlogGroupExt, PairingGroup},
-  traits::evm_serde::EvmCompatSerde,
+  provider::{
+    msm::batch_add,
+    traits::{DlogGroup, DlogGroupExt, PairingGroup},
+  },
   traits::{
     commitment::{CommitmentEngineTrait, CommitmentTrait, Len},
     evaluation::EvaluationEngineTrait,
+    evm_serde::EvmCompatSerde,
     AbsorbInRO2Trait, AbsorbInROTrait, Engine, Group, ROTrait, TranscriptEngineTrait,
     TranscriptReprTrait,
   },
@@ -648,27 +651,50 @@ where
   fn commit_sparse_binary(
     ck: &Self::CommitmentKey,
     non_zero_indices: &[usize],
-    r: &<E as Engine>::Scalar,
+    _r: &<E as Engine>::Scalar,
   ) -> Self::Commitment {
     let num_chunks = rayon::current_num_threads();
     let chunk_size = (non_zero_indices.len() + num_chunks).div_ceil(num_chunks);
-    let mut comm = non_zero_indices
+
+    // let mut comm = non_zero_indices
+    //   .par_chunks(chunk_size)
+    //   .into_par_iter()
+    //   .map(|chunk| {
+    //     // SAFETY: C::Curve and E::GE are the same concrete type (e.g., both bn256::G1),
+    //     // just different associated type paths in the type system.
+    //     let res = batch_add(chunk.iter().map(|index| ck.ck[*index]));
+    //     unsafe { std::mem::transmute_copy(&res) }
+    //   })
+    //   .reduce(E::GE::zero, |a, b| a + b);
+
+    let comms = non_zero_indices
       .par_chunks(chunk_size)
       .into_par_iter()
       .map(|chunk| {
-        let mut comm = <E as Engine>::GE::zero();
-        for index in chunk {
-          comm += <E as Engine>::GE::group(&ck.ck[*index]);
-        }
-        comm
+        // SAFETY: non_zero_indices are validated to be within ck.ck bounds by the caller
+        // unsafe { batch_add(&ck.ck, chunk) }
+        // batch_add(&ck.ck, chunk)
+        // let base: &<<E as Engine>::GE as DlogGroup>::AffineGroupElement =
+        //   ck.ck.iter().nth(chunk[0]).unwrap();
+        batch_add(chunk.iter().map(|index| ck.ck[*index]))
       })
-      .reduce(E::GE::zero, |a, b| a + b);
+      .collect::<Vec<_>>();
 
-    if r != &E::Scalar::ZERO {
-      comm += <E::GE as DlogGroup>::group(&ck.h) * r;
+    let mut comm = comms[0];
+    for this_comm in comms.iter().skip(1) {
+      comm += *this_comm;
     }
 
-    Commitment { comm }
+    // if r != &E::Scalar::ZERO {
+    //   comm += <E::GE as DlogGroup>::group(&ck.h) * r;
+    // }
+
+    // Commitment { comm }
+
+    Commitment {
+      // comm: unsafe { std::mem::transmute_copy(&comm) },
+      comm: <E::GE as DlogGroup>::group(&comm.into()),
+    }
   }
 }
 

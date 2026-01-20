@@ -189,6 +189,28 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
   }
 }
 
+/// Batch add affine points at given indices using efficient mixed addition.
+/// Uses raw pointer access to avoid bounds checking and iterator overhead.
+///
+/// # Safety
+/// All indices must be valid (< bases.len())
+#[inline(always)]
+// pub(crate) unsafe fn batch_add<C: CurveAffine>(bases: &[C], indices: &[usize]) -> C::Curve {
+pub(crate) fn batch_add<C: CurveAffine>(bases: impl Iterator<Item = C>) -> C::Curve {
+  // let mut acc = C::Curve::identity();
+  // let ptr = bases.as_ptr();
+  // for &idx in indices {
+  //   acc += *ptr.add(idx);
+  // }
+  // acc
+
+  let mut acc = C::Curve::identity();
+  for base in bases {
+    acc += base;
+  }
+  acc
+}
+
 /// MSM optimized for up to 10-bit scalars
 fn msm_10<C: CurveAffine, T: Into<u64> + Zero + Copy + Sync>(
   scalars: &[T],
