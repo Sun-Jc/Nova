@@ -21,8 +21,8 @@ criterion_main!(commit);
 fn bench_commit(c: &mut Criterion) {
   type E = Bn256EngineKZG;
 
-  let min = 1 << 20;
-  let max = 1 << 24;
+  let sizes: Vec<usize> = vec![8, 1024, 1 << 15, 1 << 20, 1 << 24];
+  let max = *sizes.last().unwrap();
 
   // sample bases for the purpose of testing
   let ck = <E as Engine>::CE::setup(b"test_from_label", max).unwrap();
@@ -42,6 +42,14 @@ fn bench_commit(c: &mut Criterion) {
     .iter()
     .map(|&x| Scalar::from(x as u64))
     .collect::<Vec<_>>();
+
+  // pre-compute non-zero indices for commit_sparse_binary benchmark
+  let non_zero_indices_u1: Vec<usize> = scalars_u1
+    .iter()
+    .enumerate()
+    .filter(|(_, &v)| v != 0)
+    .map(|(i, _)| i)
+    .collect();
 
   // 10-bit scalars that are in the set {0, ..., 2^10-1}
   let scalars_u10 = (0..max)
@@ -109,8 +117,7 @@ fn bench_commit(c: &mut Criterion) {
     })
     .collect::<Vec<_>>();
 
-  let mut size = min;
-  while size <= max {
+  for &size in &sizes {
     c.bench_function(&format!("halo2curves_commit_u1_{size}"), |b| {
       b.iter(|| black_box(msm_best(&scalars_u1_field[..size], &ck.ck()[..size])))
     });
@@ -130,6 +137,17 @@ fn bench_commit(c: &mut Criterion) {
         black_box(<E as Engine>::CE::commit_small(
           &ck,
           &scalars_u1[..size],
+          &zero,
+        ))
+      })
+    });
+
+    let nz_count = non_zero_indices_u1.partition_point(|&i| i < size);
+    c.bench_function(&format!("nova_batch_add_commit_u1_{size}"), |b| {
+      b.iter(|| {
+        black_box(<E as Engine>::CE::commit_sparse_binary(
+          &ck,
+          &non_zero_indices_u1[..nz_count],
           &zero,
         ))
       })
@@ -244,7 +262,5 @@ fn bench_commit(c: &mut Criterion) {
         ))
       })
     });
-
-    size *= 4;
   }
 }
