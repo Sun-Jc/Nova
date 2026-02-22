@@ -114,6 +114,14 @@ echo "============================================"
 
 # ── Plot ──────────────────────────────────────────────────────────
 PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
+VENV_DIR="$PROJECT_DIR/.venv"
+
+# Activate venv if available
+if [[ -f "$VENV_DIR/bin/activate" ]]; then
+  echo "Activating venv: $VENV_DIR"
+  source "$VENV_DIR/bin/activate"
+fi
+
 if [[ -f "$PLOT_SCRIPT" ]] && command -v python3 &>/dev/null; then
   echo ""
   echo "Generating plots..."
@@ -122,5 +130,7 @@ if [[ -f "$PLOT_SCRIPT" ]] && command -v python3 &>/dev/null; then
 else
   echo ""
   echo "Skipped plotting: python3 or $PLOT_SCRIPT not found."
-  echo "Run manually:  python3 $PLOT_SCRIPT --input-dir $RESULTS_DIR"
+  echo "Run manually:"
+  echo "  source .venv/bin/activate"
+  echo "  python3 $PLOT_SCRIPT --input-dir $RESULTS_DIR"
 fi
