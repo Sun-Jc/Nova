@@ -111,3 +111,16 @@ echo "All benchmarks complete."
 echo "Results:"
 ls -lh "$RESULTS_DIR"/*.txt
 echo "============================================"
+
+# ── Plot ──────────────────────────────────────────────────────────
+PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
+if [[ -f "$PLOT_SCRIPT" ]] && command -v python3 &>/dev/null; then
+  echo ""
+  echo "Generating plots..."
+  python3 "$PLOT_SCRIPT" --input-dir "$RESULTS_DIR"
+  echo ""
+else
+  echo ""
+  echo "Skipped plotting: python3 or $PLOT_SCRIPT not found."
+  echo "Run manually:  python3 $PLOT_SCRIPT --input-dir $RESULTS_DIR"
+fi
