@@ -2,11 +2,13 @@
 use crate::{
   impl_traits,
   provider::{
-    msm::{msm, msm_small, msm_small_with_max_num_bits},
+    msm::{msm_small, msm_small_with_max_num_bits},
     traits::{DlogGroup, DlogGroupExt, PairingGroup},
   },
   traits::{Group, PrimeFieldExt, TranscriptReprTrait},
 };
+#[cfg(not(any(feature = "blitzar", feature = "gpu")))]
+use crate::provider::msm::msm;
 use digest::{ExtendableOutput, Update};
 use ff::{Field, FromUniformBytes};
 use halo2curves::{
@@ -41,7 +43,7 @@ crate::impl_traits_no_dlog_ext!(
 );
 
 impl DlogGroupExt for bn256::Point {
-  #[cfg(not(feature = "blitzar"))]
+  #[cfg(not(any(feature = "blitzar", feature = "gpu")))]
   fn vartime_multiscalar_mul(scalars: &[Self::Scalar], bases: &[Self::AffineGroupElement]) -> Self {
     msm(scalars, bases)
   }
@@ -74,6 +76,12 @@ impl DlogGroupExt for bn256::Point {
     bases: &[Self::AffineGroupElement],
   ) -> Vec<Self> {
     super::blitzar::batch_vartime_multiscalar_mul(scalars, bases)
+  }
+
+  #[cfg(feature = "gpu")]
+  fn vartime_multiscalar_mul(scalars: &[Self::Scalar], bases: &[Self::AffineGroupElement]) -> Self {
+    use halo2curves::gpu::msm_gpu;
+    msm_gpu(scalars, bases)
   }
 }
 

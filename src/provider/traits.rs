@@ -367,7 +367,15 @@ macro_rules! impl_traits {
         scalars: &[Self::Scalar],
         bases: &[Self::AffineGroupElement],
       ) -> Self {
-        msm(scalars, bases)
+        #[cfg(feature = "gpu")]
+        {
+          use halo2curves::gpu::msm_gpu;
+          msm_gpu(scalars, bases)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+          msm(scalars, bases)
+        }
       }
 
       fn vartime_multiscalar_mul_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(

@@ -3,6 +3,8 @@
 use core::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use halo2curves::{bn256::Fr as Scalar, ff::Field, msm::msm_best};
+#[cfg(feature = "gpu")]
+use halo2curves::gpu::msm_gpu;
 use nova_snark::{
   provider::Bn256EngineKZG,
   traits::{commitment::CommitmentEngineTrait, Engine},
@@ -244,6 +246,29 @@ fn bench_commit(c: &mut Criterion) {
         ))
       })
     });
+
+    #[cfg(feature = "gpu")]
+    {
+      use halo2curves::bn256::G1Affine;
+      c.bench_function(&format!("gpu_commit_u1_{size}"), |b| {
+        b.iter(|| black_box(msm_gpu::<G1Affine>(&scalars_u1_field[..size], &ck.ck()[..size])))
+      });
+      c.bench_function(&format!("gpu_commit_u10_{size}"), |b| {
+        b.iter(|| black_box(msm_gpu::<G1Affine>(&scalars_u10_field[..size], &ck.ck()[..size])))
+      });
+      c.bench_function(&format!("gpu_commit_u16_{size}"), |b| {
+        b.iter(|| black_box(msm_gpu::<G1Affine>(&scalars_u16_field[..size], &ck.ck()[..size])))
+      });
+      c.bench_function(&format!("gpu_commit_u32_{size}"), |b| {
+        b.iter(|| black_box(msm_gpu::<G1Affine>(&scalars_u32_field[..size], &ck.ck()[..size])))
+      });
+      c.bench_function(&format!("gpu_commit_u64_{size}"), |b| {
+        b.iter(|| black_box(msm_gpu::<G1Affine>(&scalars_u64_field[..size], &ck.ck()[..size])))
+      });
+      c.bench_function(&format!("gpu_commit_random_{size}"), |b| {
+        b.iter(|| black_box(msm_gpu::<G1Affine>(&scalars_random_field[..size], &ck.ck()[..size])))
+      });
+    }
 
     size *= 4;
   }

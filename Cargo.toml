@@ -33,12 +33,12 @@ thiserror = "2.0.11"
 once_cell = "1.18.0"
 itertools = "0.14.0"
 
-# Use halo2curves ASM on x86_64 by default; disable ASM on non-x86_64
+# Use Sun-Jc/halo2curves fork with gpu (Metal) support
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-halo2curves = { version = "0.9.0", features = ["std", "bits", "derive_serde", "asm"] }
+halo2curves = { git = "https://github.com/Sun-Jc/halo2curves.git", branch = "v0.9.4", features = ["std", "bits", "derive_serde", "asm"] }
 
 [target.'cfg(not(target_arch = "x86_64"))'.dependencies]
-halo2curves = { version = "0.9.0", features = ["std", "bits", "derive_serde"] }
+halo2curves = { git = "https://github.com/Sun-Jc/halo2curves.git", branch = "v0.9.4", features = ["std", "bits", "derive_serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2.15", default-features = false, features = ["js"] }
@@ -96,3 +96,5 @@ evm = []
 io = []
 # Enables insecure setup methods that generate random tau. Only for testing!
 test-utils = []
+# Enables Metal GPU-accelerated MSM (Apple Silicon). Requires halo2curves gpu feature.
+gpu = ["halo2curves/gpu"]
