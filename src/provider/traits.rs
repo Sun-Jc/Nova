@@ -369,8 +369,14 @@ macro_rules! impl_traits {
       ) -> Self {
         #[cfg(feature = "gpu")]
         {
-          use halo2curves::gpu::msm_gpu;
-          msm_gpu(scalars, bases)
+          const GPU_THRESHOLD: usize = 1 << 18;
+          if bases.len() > GPU_THRESHOLD {
+            use halo2curves::gpu::msm_gpu;
+            msm_gpu(scalars, bases)
+          } else {
+            use halo2curves::msm::msm_best;
+            msm_best(scalars, bases)
+          }
         }
         #[cfg(not(feature = "gpu"))]
         {
