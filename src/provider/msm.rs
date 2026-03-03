@@ -735,22 +735,20 @@ pub fn batch_sparse_binary_msm<C: CurveAffine>(
   let num_slots = bases.len().div_ceil(slot_size);
   let num_threads = current_num_threads();
 
-  // Build a selection matrix: selections[i][k] = which position within slot k
-  // instance i selected, or u16::MAX if none.
-  // This converts sparse index lists into a dense per-slot representation.
-  let selections: Vec<Vec<u16>> = index_sets
-    .par_iter()
-    .map(|indices| {
-      let mut sel = vec![u16::MAX; num_slots];
-      for &idx in *indices {
-        let slot = idx / slot_size;
-        let pos = idx % slot_size;
-        debug_assert!(slot < num_slots);
-        sel[slot] = pos as u16;
-      }
-      sel
-    })
-    .collect();
+  // Build a slot-major selection matrix: selections[slot][i] = which position within slot
+  // instance i selected, or u8::MAX if none.
+  // Slot-major layout ensures that the inner loop scanning all instances for a given slot
+  // accesses contiguous memory.
+  let mut selections: Vec<u8> = vec![u8::MAX; num_slots * n];
+  for (i, indices) in index_sets.iter().enumerate() {
+    for &idx in *indices {
+      let slot = idx / slot_size;
+      let pos = idx % slot_size;
+      debug_assert!(slot < num_slots);
+      debug_assert!(pos < 256); // fits in u8
+      selections[slot * n + i] = pos as u8;
+    }
+  }
 
   // Process slots in parallel chunks.
   // Each chunk of slots produces N partial accumulators.
@@ -775,10 +773,11 @@ pub fn batch_sparse_binary_msm<C: CurveAffine>(
           *c = 0;
         }
 
-        // Assign instances to buckets based on their selection
-        for (i, sel) in selections.iter().enumerate() {
-          let pos = sel[slot];
-          if pos != u16::MAX {
+        // Assign instances to buckets based on their selection.
+        // selections is slot-major so selections[slot * n .. slot * n + n] is contiguous.
+        let sel_row = &selections[slot * n..(slot + 1) * n];
+        for (i, &pos) in sel_row.iter().enumerate() {
+          if pos != u8::MAX {
             let p = pos as usize;
             let offset = p * n + bucket_counts[p] as usize;
             bucket_store[offset] = i as u32;
