@@ -685,8 +685,125 @@ fn compute_ln(a: usize) -> usize {
   }
 }
 
+// ==================================================================================
+// Batch sparse binary MSM
+// ==================================================================================
+
+/// Batch sparse binary MSM optimized for slotted one-hot structure.
+///
+/// Given `bases` (length `num_slots * slot_size`) and `N` index vectors where each
+/// vector has exactly one non-zero entry per contiguous slot of `slot_size` bases,
+/// computes `N` independent subset-sums simultaneously.
+///
+/// For each slot, instances that selected the same base are grouped together,
+/// so the base point is read once and the bucket result is distributed to all
+/// matching accumulators. With `N` instances and `slot_size` choices per slot,
+/// each bucket holds ~`N/slot_size` instances on average, reducing the number
+/// of expensive mixed additions by that factor compared to `N` independent calls.
+///
+/// # Arguments
+/// * `bases` - The full generator array (length ≥ `num_slots * slot_size`)
+/// * `index_sets` - `N` slices of non-zero indices (each index < bases.len())
+/// * `slot_size` - Number of bases per slot (e.g., 16)
+///
+/// # Returns
+/// `N` curve points, one per index set.
+pub fn batch_sparse_binary_msm<C: CurveAffine>(
+  bases: &[C],
+  index_sets: &[&[usize]],
+  slot_size: usize,
+) -> Vec<C::Curve> {
+  let n = index_sets.len();
+  if n == 0 {
+    return vec![];
+  }
+  if n == 1 {
+    return vec![batch_add(bases, index_sets[0])];
+  }
+
+  let num_slots = bases.len().div_ceil(slot_size);
+  let num_threads = current_num_threads();
+
+  // Build a selection matrix: selections[i][k] = which position within slot k
+  // instance i selected, or u16::MAX if none.
+  // This converts sparse index lists into a dense per-slot representation.
+  let selections: Vec<Vec<u16>> = index_sets
+    .par_iter()
+    .map(|indices| {
+      let mut sel = vec![u16::MAX; num_slots];
+      for &idx in *indices {
+        let slot = idx / slot_size;
+        let pos = idx % slot_size;
+        debug_assert!(slot < num_slots);
+        sel[slot] = pos as u16;
+      }
+      sel
+    })
+    .collect();
+
+  // Process slots in parallel chunks.
+  // Each chunk of slots produces N partial accumulators.
+  let slot_chunk_size = num_slots.div_ceil(num_threads);
+
+  let partial_accs: Vec<Vec<BucketXYZZ<C::Base>>> = (0..num_slots)
+    .into_par_iter()
+    .step_by(slot_chunk_size)
+    .map(|slot_start| {
+      let slot_end = (slot_start + slot_chunk_size).min(num_slots);
+      let mut accs: Vec<BucketXYZZ<C::Base>> = vec![BucketXYZZ::zero(); n];
+
+      // Temporary bucket: for each position in the slot, collect instance ids
+      let mut bucket_ids: Vec<Vec<usize>> = vec![Vec::new(); slot_size];
+
+      for slot in slot_start..slot_end {
+        // Clear buckets
+        for b in bucket_ids.iter_mut() {
+          b.clear();
+        }
+
+        // Assign instances to buckets based on their selection
+        for (i, sel) in selections.iter().enumerate() {
+          let pos = sel[slot];
+          if pos != u16::MAX {
+            bucket_ids[pos as usize].push(i);
+          }
+        }
+
+        // For each non-empty bucket, read the base once and add to all matching accumulators
+        let base_offset = slot * slot_size;
+        for (pos, ids) in bucket_ids.iter().enumerate() {
+          if ids.is_empty() {
+            continue;
+          }
+          let base_idx = base_offset + pos;
+          if base_idx >= bases.len() {
+            continue;
+          }
+          let base = &bases[base_idx];
+          for &inst_id in ids {
+            bucket_add_affine::<C>(&mut accs[inst_id], base);
+          }
+        }
+      }
+      accs
+    })
+    .collect();
+
+  // Reduce: sum partial accumulators across slot chunks
+  let mut final_accs: Vec<BucketXYZZ<C::Base>> = vec![BucketXYZZ::zero(); n];
+  for partial in &partial_accs {
+    for i in 0..n {
+      final_accs[i].add_assign_bucket(&partial[i]);
+    }
+  }
+
+  // Convert to curve points
+  final_accs.iter().map(bucket_to_curve::<C>).collect()
+}
+
+/// Sums the affine points at the given indices, using parallel chunked accumulation.
 #[inline(always)]
-pub(crate) fn batch_add<C: CurveAffine>(bases: &[C], one_indices: &[usize]) -> C::Curve {
+pub fn batch_add<C: CurveAffine>(bases: &[C], one_indices: &[usize]) -> C::Curve {
   fn add_chunk<C: CurveAffine>(bases: impl Iterator<Item = C>) -> C::Curve {
     let mut acc = C::Curve::identity();
     for base in bases {
@@ -781,5 +898,53 @@ mod tests {
     test_msm_ux_with::<grumpkin::Scalar, grumpkin::Affine>();
     test_msm_ux_with::<secp256k1::Scalar, secp256k1::Affine>();
     test_msm_ux_with::<secq256k1::Scalar, secq256k1::Affine>();
+  }
+
+  fn test_batch_sparse_binary_msm_with<F: PrimeField, A: CurveAffine<ScalarExt = F>>() {
+    use rand::Rng;
+
+    let slot_size = 16;
+    let num_slots = 64; // small for testing
+    let num_bases = num_slots * slot_size;
+    let num_instances = 32;
+
+    // Generate random bases
+    let bases: Vec<A> = (0..num_bases)
+      .map(|_| A::from(A::generator() * F::random(OsRng)))
+      .collect();
+
+    // Generate random one-hot-per-slot index sets
+    let mut rng = rand::thread_rng();
+    let index_sets: Vec<Vec<usize>> = (0..num_instances)
+      .map(|_| {
+        (0..num_slots)
+          .map(|slot| slot * slot_size + rng.gen_range(0..slot_size))
+          .collect()
+      })
+      .collect();
+
+    let index_refs: Vec<&[usize]> = index_sets.iter().map(|v| v.as_slice()).collect();
+
+    // Compute with batch_sparse_binary_msm
+    let batch_results = batch_sparse_binary_msm(&bases, &index_refs, slot_size);
+
+    // Compute independently with batch_add as reference
+    let ref_results: Vec<A::CurveExt> = index_sets
+      .iter()
+      .map(|indices| batch_add(&bases, indices))
+      .collect();
+
+    // Compare
+    for i in 0..num_instances {
+      assert_eq!(batch_results[i], ref_results[i], "mismatch at instance {i}");
+    }
+  }
+
+  #[test]
+  fn test_batch_sparse_binary_msm() {
+    test_batch_sparse_binary_msm_with::<bn256::Scalar, bn256::Affine>();
+    test_batch_sparse_binary_msm_with::<pallas::Scalar, pallas::Affine>();
+    test_batch_sparse_binary_msm_with::<grumpkin::Scalar, grumpkin::Affine>();
+    test_batch_sparse_binary_msm_with::<secp256k1::Scalar, secp256k1::Affine>();
   }
 }

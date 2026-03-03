@@ -80,6 +80,10 @@ harness = false
 name = "sumcheckeq"
 harness = false
 
+[[bench]]
+name = "batch-binary-msm"
+harness = false
+
 [[example]]
 name = "ptau_test_setup"
 required-features = ["test-utils", "io"]
