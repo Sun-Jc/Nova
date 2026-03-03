@@ -133,17 +133,28 @@ fn bucket_add_affine<C: CurveAffine>(bucket: &mut BucketXYZZ<C::Base>, p: &C) {
   let coords = p.coordinates().unwrap();
   let px = *coords.x();
   let py = *coords.y();
+  bucket_add_affine_xy::<C>(bucket, &px, &py);
+}
 
+/// Mixed addition with pre-extracted affine coordinates.
+/// Avoids repeated coordinate extraction when the same base is added to multiple buckets.
+/// Cost: 7M + 2S
+#[inline]
+fn bucket_add_affine_xy<C: CurveAffine>(
+  bucket: &mut BucketXYZZ<C::Base>,
+  px: &C::Base,
+  py: &C::Base,
+) {
   if bucket.is_zero() {
-    bucket.x = px;
-    bucket.y = py;
+    bucket.x = *px;
+    bucket.y = *py;
     bucket.zz = C::Base::ONE;
     bucket.zzz = C::Base::ONE;
     return;
   }
   // U2 = X2*ZZ1, S2 = Y2*ZZZ1
-  let u2 = px * bucket.zz;
-  let s2 = py * bucket.zzz;
+  let u2 = *px * bucket.zz;
+  let s2 = *py * bucket.zzz;
 
   if bucket.x == u2 {
     if bucket.y == s2 {
@@ -752,36 +763,54 @@ pub fn batch_sparse_binary_msm<C: CurveAffine>(
       let slot_end = (slot_start + slot_chunk_size).min(num_slots);
       let mut accs: Vec<BucketXYZZ<C::Base>> = vec![BucketXYZZ::zero(); n];
 
-      // Temporary bucket: for each position in the slot, collect instance ids
-      let mut bucket_ids: Vec<Vec<usize>> = vec![Vec::new(); slot_size];
+      // Fixed-capacity bucket storage to avoid heap allocation per slot.
+      // bucket_counts[pos] = how many instance ids are stored for position `pos`.
+      // bucket_store[pos * n .. pos * n + bucket_counts[pos]] = the instance ids.
+      let mut bucket_counts: Vec<u32> = vec![0u32; slot_size];
+      let mut bucket_store: Vec<u32> = vec![0u32; slot_size * n];
 
       for slot in slot_start..slot_end {
-        // Clear buckets
-        for b in bucket_ids.iter_mut() {
-          b.clear();
+        // Clear bucket counts (O(slot_size), not O(n))
+        for c in bucket_counts.iter_mut() {
+          *c = 0;
         }
 
         // Assign instances to buckets based on their selection
         for (i, sel) in selections.iter().enumerate() {
           let pos = sel[slot];
           if pos != u16::MAX {
-            bucket_ids[pos as usize].push(i);
+            let p = pos as usize;
+            let offset = p * n + bucket_counts[p] as usize;
+            bucket_store[offset] = i as u32;
+            bucket_counts[p] += 1;
           }
         }
 
-        // For each non-empty bucket, read the base once and add to all matching accumulators
+        // For each non-empty bucket, read base coords once, add to all matching accumulators
         let base_offset = slot * slot_size;
-        for (pos, ids) in bucket_ids.iter().enumerate() {
-          if ids.is_empty() {
+        for pos in 0..slot_size {
+          let count = bucket_counts[pos] as usize;
+          if count == 0 {
             continue;
           }
           let base_idx = base_offset + pos;
           if base_idx >= bases.len() {
             continue;
           }
+
+          // Extract affine coordinates once for this base
           let base = &bases[base_idx];
-          for &inst_id in ids {
-            bucket_add_affine::<C>(&mut accs[inst_id], base);
+          if bool::from(base.is_identity()) {
+            continue;
+          }
+          let coords = base.coordinates().unwrap();
+          let px = *coords.x();
+          let py = *coords.y();
+
+          // Add to each matching accumulator using pre-extracted coordinates
+          let id_slice = &bucket_store[pos * n..pos * n + count];
+          for &inst_id in id_slice {
+            bucket_add_affine_xy::<C>(&mut accs[inst_id as usize], &px, &py);
           }
         }
       }
@@ -789,16 +818,28 @@ pub fn batch_sparse_binary_msm<C: CurveAffine>(
     })
     .collect();
 
-  // Reduce: sum partial accumulators across slot chunks
-  let mut final_accs: Vec<BucketXYZZ<C::Base>> = vec![BucketXYZZ::zero(); n];
-  for partial in &partial_accs {
-    for i in 0..n {
-      final_accs[i].add_assign_bucket(&partial[i]);
-    }
+  // Parallel reduce: sum partial accumulators across slot chunks
+  if partial_accs.len() == 1 {
+    return partial_accs
+      .into_iter()
+      .next()
+      .unwrap()
+      .iter()
+      .map(bucket_to_curve::<C>)
+      .collect();
   }
 
-  // Convert to curve points
-  final_accs.iter().map(bucket_to_curve::<C>).collect()
+  // Reduce in parallel over instance dimension
+  (0..n)
+    .into_par_iter()
+    .map(|i| {
+      let mut acc = BucketXYZZ::<C::Base>::zero();
+      for partial in &partial_accs {
+        acc.add_assign_bucket(&partial[i]);
+      }
+      bucket_to_curve::<C>(&acc)
+    })
+    .collect()
 }
 
 /// Sums the affine points at the given indices, using parallel chunked accumulation.
