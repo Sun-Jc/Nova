@@ -429,6 +429,10 @@ fn msm_simple<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
 }
 
 /// Accumulate bases (sum of affine points, for binary MSM).
+///
+/// For large inputs, uses parallel XYZZ coordinates for mixed addition (7M + 2S)
+/// instead of standard projective addition (~11M + 5S). For small inputs, uses
+/// projective addition to avoid the XYZZ→affine conversion cost (2 field inversions).
 fn accumulate_bases<C: CurveAffine>(bases: &[C]) -> C::Curve {
   let num_threads = current_num_threads();
   if bases.is_empty() {
@@ -436,15 +440,20 @@ fn accumulate_bases<C: CurveAffine>(bases: &[C]) -> C::Curve {
   }
   if bases.len() > num_threads {
     let chunk = bases.len().div_ceil(num_threads);
-    bases
+    let bucket = bases
       .par_chunks(chunk)
       .map(|chunk| {
-        chunk.iter().fold(C::Curve::identity(), |mut acc, b| {
-          acc += *b;
-          acc
-        })
+        let mut bucket = BucketXYZZ::<C::Base>::zero();
+        for b in chunk {
+          bucket_add_affine::<C>(&mut bucket, b);
+        }
+        bucket
       })
-      .reduce(C::Curve::identity, |a, b| a + b)
+      .reduce(BucketXYZZ::zero, |mut a, b| {
+        a.add_assign_bucket(&b);
+        a
+      });
+    bucket_to_curve::<C>(&bucket)
   } else {
     bases.iter().fold(C::Curve::identity(), |mut acc, b| {
       acc += *b;
@@ -502,10 +511,39 @@ pub fn msm_small_with_max_num_bits<
   }
 }
 
+/// MSM for binary (0/1) scalars using XYZZ bucket accumulation.
+///
+/// For large inputs, uses parallel XYZZ coordinates for mixed addition (7M + 2S)
+/// instead of standard projective addition (~11M + 5S). For small inputs, uses
+/// projective addition to avoid the XYZZ→affine conversion cost (2 field inversions).
 fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> C::Curve {
   assert_eq!(scalars.len(), bases.len());
   let num_threads = current_num_threads();
-  let process_chunk = |scalars: &[T], bases: &[C]| {
+
+  if scalars.len() > num_threads {
+    let process_chunk = |scalars: &[T], bases: &[C]| -> BucketXYZZ<C::Base> {
+      let mut bucket = BucketXYZZ::<C::Base>::zero();
+      scalars
+        .iter()
+        .zip(bases.iter())
+        .filter(|(scalar, _)| !scalar.is_zero())
+        .for_each(|(_, base)| {
+          bucket_add_affine::<C>(&mut bucket, base);
+        });
+      bucket
+    };
+
+    let chunk = scalars.len() / num_threads;
+    let bucket = scalars
+      .par_chunks(chunk)
+      .zip(bases.par_chunks(chunk))
+      .map(|(scalars, bases)| process_chunk(scalars, bases))
+      .reduce(BucketXYZZ::zero, |mut a, b| {
+        a.add_assign_bucket(&b);
+        a
+      });
+    bucket_to_curve::<C>(&bucket)
+  } else {
     let mut acc = C::Curve::identity();
     scalars
       .iter()
@@ -515,17 +553,6 @@ fn msm_binary<C: CurveAffine, T: Integer + Sync>(scalars: &[T], bases: &[C]) -> 
         acc += *base;
       });
     acc
-  };
-
-  if scalars.len() > num_threads {
-    let chunk = scalars.len() / num_threads;
-    scalars
-      .par_chunks(chunk)
-      .zip(bases.par_chunks(chunk))
-      .map(|(scalars, bases)| process_chunk(scalars, bases))
-      .reduce(C::Curve::identity, |sum, evl| sum + evl)
-  } else {
-    process_chunk(scalars, bases)
   }
 }
 
@@ -685,26 +712,45 @@ fn compute_ln(a: usize) -> usize {
   }
 }
 
+/// Batch addition of affine points selected by index, for sparse binary commitments.
+///
+/// For large inputs, uses parallel XYZZ coordinates for mixed addition (7M + 2S)
+/// instead of standard projective addition (~11M + 5S). For small inputs, uses
+/// projective addition to avoid the XYZZ→affine conversion cost (2 field inversions).
 #[inline(always)]
 pub(crate) fn batch_add<C: CurveAffine>(bases: &[C], one_indices: &[usize]) -> C::Curve {
-  fn add_chunk<C: CurveAffine>(bases: impl Iterator<Item = C>) -> C::Curve {
-    let mut acc = C::Curve::identity();
-    for base in bases {
-      acc += base;
-    }
-    acc
+  if one_indices.is_empty() {
+    return C::Curve::identity();
   }
 
   let num_chunks = rayon::current_num_threads();
-  let chunk_size = (one_indices.len() + num_chunks).div_ceil(num_chunks);
 
-  let comm = one_indices
-    .par_chunks(chunk_size)
-    .into_par_iter()
-    .map(|chunk| add_chunk(chunk.iter().map(|index| bases[*index])))
-    .reduce(C::Curve::identity, |sum, evl| sum + evl);
+  if one_indices.len() > num_chunks {
+    let chunk_size = (one_indices.len() + num_chunks).div_ceil(num_chunks);
 
-  comm
+    let bucket = one_indices
+      .par_chunks(chunk_size)
+      .into_par_iter()
+      .map(|chunk| {
+        let mut bucket = BucketXYZZ::<C::Base>::zero();
+        for &index in chunk {
+          bucket_add_affine::<C>(&mut bucket, &bases[index]);
+        }
+        bucket
+      })
+      .reduce(BucketXYZZ::zero, |mut a, b| {
+        a.add_assign_bucket(&b);
+        a
+      });
+
+    bucket_to_curve::<C>(&bucket)
+  } else {
+    let mut acc = C::Curve::identity();
+    for &index in one_indices {
+      acc += bases[index];
+    }
+    acc
+  }
 }
 
 #[cfg(test)]

@@ -109,8 +109,23 @@ fn bench_commit(c: &mut Criterion) {
     })
     .collect::<Vec<_>>();
 
+  // Pre-compute non-zero indices for sparse binary commit benchmarks
+  let non_zero_indices: Vec<usize> = scalars_u1
+    .iter()
+    .enumerate()
+    .filter(|(_, &s)| s == 1)
+    .map(|(i, _)| i)
+    .collect();
+
   let mut size = min;
   while size <= max {
+    // Collect indices within [0, size) for sparse binary commit
+    let sparse_indices: Vec<usize> = non_zero_indices
+      .iter()
+      .copied()
+      .filter(|&i| i < size)
+      .collect();
+
     c.bench_function(&format!("halo2curves_commit_u1_{size}"), |b| {
       b.iter(|| black_box(msm_best(&scalars_u1_field[..size], &ck.ck()[..size])))
     });
@@ -130,6 +145,16 @@ fn bench_commit(c: &mut Criterion) {
         black_box(<E as Engine>::CE::commit_small(
           &ck,
           &scalars_u1[..size],
+          &zero,
+        ))
+      })
+    });
+
+    c.bench_function(&format!("nova_sparse_binary_commit_u1_{size}"), |b| {
+      b.iter(|| {
+        black_box(<E as Engine>::CE::commit_sparse_binary(
+          &ck,
+          &sparse_indices,
           &zero,
         ))
       })
