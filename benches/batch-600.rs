@@ -4,11 +4,15 @@
 //! Compares:
 //! 1. Sequential sparse_binary (baseline)
 //! 2. Parallel sparse_binary (par_iter over 600 commits)
-//! 3. Parallel transpose (block-major order with generator dedup)
+//! 3. Parallel transpose (block-major order)
+//! 4. Parallel transpose + precomp table (t=2)
 use core::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nova_snark::{
-  provider::{msm::batch_add_one_hot_transpose, Bn256EngineKZG},
+  provider::{
+    msm::{batch_add_one_hot_precomp_transpose, batch_add_one_hot_transpose, OneHotPrecompTable},
+    Bn256EngineKZG,
+  },
   traits::{commitment::CommitmentEngineTrait, Engine},
 };
 use rand::Rng;
@@ -49,18 +53,18 @@ fn bench_batch_600(c: &mut Criterion) {
   let zero = <E as Engine>::Scalar::default();
   println!("Setup done. Generating {num_commits} random offset vectors...");
 
-  // Generate 600 random offset vectors
   let all_offsets: Vec<Vec<usize>> = (0..num_commits)
     .map(|_| random_offsets(num_blocks, k))
     .collect();
 
-  // Pre-compute global indices for sparse_binary
   let all_global_indices: Vec<Vec<usize>> = all_offsets
     .iter()
     .map(|offsets| offsets_to_global_indices(offsets, k))
     .collect();
 
-  println!("Data ready. Starting benchmarks...");
+  println!("Building precomp table t=2...");
+  let table = OneHotPrecompTable::new(&ck.ck()[..total_size], k, num_blocks);
+  println!("Table built. Starting benchmarks...");
 
   let mut group = c.benchmark_group(format!("batch_{num_commits}_commits_K{k}"));
 
@@ -73,7 +77,7 @@ fn bench_batch_600(c: &mut Criterion) {
     });
   });
 
-  // 2. Parallel: par_iter over 600 commits (Strategy A)
+  // 2. Parallel: par_iter over 600 commits
   group.bench_function("parallel_sparse", |b| {
     b.iter(|| {
       let results: Vec<_> = all_global_indices
@@ -84,11 +88,20 @@ fn bench_batch_600(c: &mut Criterion) {
     });
   });
 
-  // 3. Parallel transpose (Strategy C)
+  // 3. Parallel transpose (block-major, no precomp)
   group.bench_function("parallel_transpose", |b| {
     b.iter(|| {
       let refs: Vec<&[usize]> = all_offsets.iter().map(|v| v.as_slice()).collect();
       let results = batch_add_one_hot_transpose(&ck.ck()[..total_size], k, &refs);
+      black_box(results);
+    });
+  });
+
+  // 4. Parallel transpose + precomp table (t=2)
+  group.bench_function("precomp_transpose", |b| {
+    b.iter(|| {
+      let refs: Vec<&[usize]> = all_offsets.iter().map(|v| v.as_slice()).collect();
+      let results = batch_add_one_hot_precomp_transpose(&table, &refs);
       black_box(results);
     });
   });

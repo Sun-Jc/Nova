@@ -1268,6 +1268,126 @@ pub fn batch_add_one_hot_transpose<C: CurveAffine>(
     .collect()
 }
 
+// ==================================================================================
+// Batch one-hot commit: parallel transpose with precomputed tables
+// ==================================================================================
+
+/// Batch addition for multiple one-hot vectors using precomputed pair tables + transposed iteration.
+///
+/// Combines two optimizations:
+/// 1. **Precomputed tables (t=2)**: each pair of blocks has K² precomputed sums,
+///    so each commit needs only 1 table lookup per pair instead of 2 point additions.
+/// 2. **Transposed iteration**: iterates in pair-major order across all commits,
+///    keeping accumulators hot in cache.
+///
+/// This halves the number of point additions compared to plain transpose:
+/// `num_commits × (num_blocks / 2)` additions instead of `num_commits × num_blocks`.
+///
+/// # Arguments
+/// * `table` — precomputed `OneHotPrecompTable` (t=2) for the generators
+/// * `all_offsets` — `all_offsets[commit_idx][block_idx]` = offset within that block
+///
+/// # Returns
+/// One projective point per commit.
+pub fn batch_add_one_hot_precomp_transpose<C: CurveAffine>(
+  table: &OneHotPrecompTable<C>,
+  all_offsets: &[&[usize]],
+) -> Vec<C::Curve> {
+  let num_commits = all_offsets.len();
+  if num_commits == 0 {
+    return vec![];
+  }
+
+  let k = table.block_size;
+  let num_blocks = table.num_blocks;
+  let num_pairs = num_blocks / 2;
+
+  for offsets in all_offsets.iter() {
+    assert_eq!(offsets.len(), num_blocks);
+  }
+
+  if num_pairs == 0 {
+    // 0 or 1 blocks: handle trivially
+    return all_offsets
+      .iter()
+      .map(|offsets| {
+        if num_blocks == 1 {
+          if let Some(ref leftover) = table.leftover_bases {
+            return C::Curve::identity() + leftover[offsets[0]];
+          }
+        }
+        C::Curve::identity()
+      })
+      .collect();
+  }
+
+  let num_threads = current_num_threads();
+  let pairs_per_thread = num_pairs.div_ceil(num_threads);
+
+  // Each thread processes a range of pairs, maintaining its own 600 accumulators.
+  let partial_results: Vec<Vec<BucketXYZZ<C::Base>>> = (0..num_threads)
+    .into_par_iter()
+    .map(|thread_idx| {
+      let pair_start = thread_idx * pairs_per_thread;
+      let pair_end = (pair_start + pairs_per_thread).min(num_pairs);
+      if pair_start >= pair_end {
+        return vec![BucketXYZZ::zero(); num_commits];
+      }
+
+      let mut accumulators: Vec<BucketXYZZ<C::Base>> = vec![BucketXYZZ::zero(); num_commits];
+
+      for pair_idx in pair_start..pair_end {
+        // Prefetch next pair's table
+        if pair_idx + 1 < pair_end {
+          prefetch_read(table.tables[pair_idx + 1].as_ptr());
+        }
+
+        let pair_table = &table.tables[pair_idx];
+
+        // For each commit, compute the table index from its two block offsets
+        // and add the precomputed sum to the accumulator. One lookup per pair.
+        for (i, offsets) in all_offsets.iter().enumerate() {
+          let a = offsets[2 * pair_idx];
+          let b = offsets[2 * pair_idx + 1];
+          debug_assert!(a < k && b < k);
+          let table_idx = a * k + b;
+          bucket_add_affine::<C>(&mut accumulators[i], &pair_table[table_idx]);
+        }
+      }
+
+      accumulators
+    })
+    .collect();
+
+  // Merge partial results from all threads
+  let mut results: Vec<C::Curve> = (0..num_commits)
+    .into_par_iter()
+    .map(|commit_idx| {
+      let mut merged = BucketXYZZ::<C::Base>::zero();
+      for thread_result in &partial_results {
+        merged.add_assign_bucket(&thread_result[commit_idx]);
+      }
+      if merged.is_zero() {
+        C::Curve::identity()
+      } else {
+        bucket_to_curve::<C>(&merged)
+      }
+    })
+    .collect();
+
+  // Handle the leftover odd block (if num_blocks is odd)
+  if let Some(ref leftover) = table.leftover_bases {
+    let last_block = num_blocks - 1;
+    for (i, offsets) in all_offsets.iter().enumerate() {
+      let offset = offsets[last_block];
+      debug_assert!(offset < k);
+      results[i] += leftover[offset];
+    }
+  }
+
+  results
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1548,5 +1668,47 @@ mod tests {
   fn test_batch_transpose() {
     test_batch_transpose_with::<pallas::Affine>();
     test_batch_transpose_with::<bn256::Affine>();
+  }
+
+  /// Test precomp+transpose correctness.
+  fn test_batch_precomp_transpose_with<A: CurveAffine>() {
+    let k: usize = 16;
+    let num_blocks = 64;
+    let n = num_blocks * k;
+    let bases: Vec<A> = (0..n)
+      .map(|_| A::from(A::generator() * A::Scalar::random(OsRng)))
+      .collect();
+
+    let table = OneHotPrecompTable::new(&bases, k, num_blocks);
+
+    for &num_commits in &[1, 2, 10, 50, 100] {
+      let all_offsets: Vec<Vec<usize>> = (0..num_commits)
+        .map(|_| {
+          (0..num_blocks)
+            .map(|_| rand::random::<usize>() % k)
+            .collect()
+        })
+        .collect();
+
+      let all_offsets_refs: Vec<&[usize]> = all_offsets.iter().map(|v| v.as_slice()).collect();
+
+      // Compute with precomp+transpose
+      let batch_results = batch_add_one_hot_precomp_transpose::<A>(&table, &all_offsets_refs);
+
+      // Compute each individually
+      for (i, offsets) in all_offsets.iter().enumerate() {
+        let individual = batch_add_one_hot::<A>(&bases, k, offsets);
+        assert_eq!(
+          batch_results[i], individual,
+          "precomp_transpose mismatch at commit={i}, num_commits={num_commits}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn test_batch_precomp_transpose() {
+    test_batch_precomp_transpose_with::<pallas::Affine>();
+    test_batch_precomp_transpose_with::<bn256::Affine>();
   }
 }
