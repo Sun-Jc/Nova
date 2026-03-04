@@ -109,6 +109,21 @@ pub trait CommitmentEngineTrait<E: Engine>: Clone + Send + Sync {
     r: &E::Scalar,
   ) -> Self::Commitment;
 
+  /// Commits to a one-hot structured vector where each block of `block_size` elements
+  /// has exactly one non-zero (=1) entry at the specified offset.
+  ///
+  /// `block_offsets[i]` gives the offset within block `i` (`0 <= offset < block_size`).
+  /// The global index for block `i` is `i * block_size + block_offsets[i]`.
+  ///
+  /// This method uses software prefetch hints to hide memory latency from the strided
+  /// access pattern inherent to one-hot commitment.
+  fn commit_one_hot(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    block_offsets: &[usize],
+    r: &E::Scalar,
+  ) -> Self::Commitment;
+
   /// Commits to the provided vector of "small" scalars (at most 64 bits) using the provided generators and random blind
   fn commit_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
     ck: &Self::CommitmentKey,

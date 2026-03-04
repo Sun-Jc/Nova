@@ -13,6 +13,7 @@ use crate::{
   gadgets::utils::to_bignat_repr,
   provider::{
     msm::batch_add,
+    msm::batch_add_one_hot,
     traits::{DlogGroup, DlogGroupExt, PairingGroup},
   },
   traits::{
@@ -716,6 +717,22 @@ where
     r: &<E as Engine>::Scalar,
   ) -> Self::Commitment {
     let comm = batch_add(&ck.ck, non_zero_indices);
+    let mut comm = <E::GE as DlogGroup>::group(&comm.into());
+
+    if r != &E::Scalar::ZERO {
+      comm += <E::GE as DlogGroup>::group(&ck.h) * r;
+    }
+
+    Commitment { comm }
+  }
+
+  fn commit_one_hot(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    block_offsets: &[usize],
+    r: &<E as Engine>::Scalar,
+  ) -> Self::Commitment {
+    let comm = batch_add_one_hot(&ck.ck, block_size, block_offsets);
     let mut comm = <E::GE as DlogGroup>::group(&comm.into());
 
     if r != &E::Scalar::ZERO {

@@ -14,6 +14,7 @@
 //!    mixed addition (7M + 2S) compared to standard Jacobian (~11M + 5S for proj+affine).
 //!
 //! The MSM implementations (for integer types and field types) are adapted from halo2/jolt.
+#![allow(unsafe_code)]
 use ff::{Field, PrimeField};
 use halo2curves::{group::Group, CurveAffine};
 use num_integer::Integer;
@@ -753,6 +754,520 @@ pub(crate) fn batch_add<C: CurveAffine>(bases: &[C], one_indices: &[usize]) -> C
   }
 }
 
+// ==================================================================================
+// One-hot sparse binary commitment: batch addition with structural optimizations
+// ==================================================================================
+
+/// Software prefetch hint for read access.
+///
+/// On x86_64, issues a `prefetcht0` instruction to bring data into all cache levels.
+/// On other architectures, this is a no-op.
+#[inline(always)]
+fn prefetch_read<T>(ptr: *const T) {
+  #[cfg(target_arch = "x86_64")]
+  unsafe {
+    core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_T0);
+  }
+  #[cfg(not(target_arch = "x86_64"))]
+  {
+    let _ = ptr; // suppress unused warning
+  }
+}
+
+/// Batch addition of affine points for one-hot structured vectors.
+///
+/// A one-hot vector of length `num_blocks * block_size` has exactly one non-zero (=1) entry
+/// per block of size `block_size`. `block_offsets[i]` gives the offset within block `i`
+/// (must satisfy `0 <= block_offsets[i] < block_size`).
+///
+/// The global index for block `i` is `i * block_size + block_offsets[i]`.
+///
+/// This function uses software prefetch hints to hide memory latency from strided access
+/// into the (potentially large) generator array.
+pub(crate) fn batch_add_one_hot<C: CurveAffine>(
+  bases: &[C],
+  block_size: usize,
+  block_offsets: &[usize],
+) -> C::Curve {
+  assert!(block_size > 0, "block_size must be positive");
+  let num_blocks = block_offsets.len();
+  if num_blocks == 0 {
+    return C::Curve::identity();
+  }
+
+  let num_threads = current_num_threads();
+
+  if num_blocks > num_threads {
+    let chunk_size = num_blocks.div_ceil(num_threads);
+
+    let bucket = (0..num_blocks)
+      .into_par_iter()
+      .chunks(chunk_size)
+      .map(|block_indices| {
+        let mut bucket = BucketXYZZ::<C::Base>::zero();
+        for (local_idx, block_idx) in block_indices.iter().enumerate() {
+          // Prefetch the point for the next iteration to hide memory latency.
+          // The stride between accessed generators is block_size * sizeof(C),
+          // which is typically 64-128 bytes * block_size — well beyond a cache line.
+          if local_idx + 1 < block_indices.len() {
+            let next_block = block_indices[local_idx + 1];
+            let next_global = next_block * block_size + block_offsets[next_block];
+            prefetch_read(bases.as_ptr().wrapping_add(next_global));
+          }
+          let global_idx = block_idx * block_size + block_offsets[*block_idx];
+          debug_assert!(global_idx < bases.len());
+          bucket_add_affine::<C>(&mut bucket, &bases[global_idx]);
+        }
+        bucket
+      })
+      .reduce(BucketXYZZ::zero, |mut a, b| {
+        a.add_assign_bucket(&b);
+        a
+      });
+
+    bucket_to_curve::<C>(&bucket)
+  } else {
+    // Small number of blocks: sequential with prefetch
+    let mut bucket = BucketXYZZ::<C::Base>::zero();
+    for i in 0..num_blocks {
+      if i + 1 < num_blocks {
+        let next_global = (i + 1) * block_size + block_offsets[i + 1];
+        prefetch_read(bases.as_ptr().wrapping_add(next_global));
+      }
+      let global_idx = i * block_size + block_offsets[i];
+      bucket_add_affine::<C>(&mut bucket, &bases[global_idx]);
+    }
+    if bucket.is_zero() {
+      C::Curve::identity()
+    } else {
+      bucket_to_curve::<C>(&bucket)
+    }
+  }
+}
+
+/// Precomputed table for one-hot block pairs.
+///
+/// For each consecutive pair of blocks `(2i, 2i+1)`, the table stores all `K * K`
+/// possible sums `bases[2i*K + a] + bases[(2i+1)*K + b]` for `a, b in 0..K`.
+/// This turns two point additions into a single table lookup.
+///
+/// Memory layout: `tables[pair_idx][a * K + b]` = `bases[2*pair_idx*K + a] + bases[(2*pair_idx+1)*K + b]`
+///
+/// For K=16, each pair needs 256 precomputed points (~16 KB per pair).
+pub struct OneHotPrecompTable<C: CurveAffine> {
+  /// Precomputed sums for each block pair: tables[pair][a * K + b]
+  tables: Vec<Vec<C>>,
+  /// Block size K
+  block_size: usize,
+  /// Total number of blocks
+  num_blocks: usize,
+  /// Leftover bases for the odd-one-out block (if num_blocks is odd)
+  leftover_bases: Option<Vec<C>>,
+}
+
+impl<C: CurveAffine> OneHotPrecompTable<C> {
+  /// Build precomputation tables for the given generator bases and block size.
+  ///
+  /// `bases` is the full generator array of length `num_blocks * block_size`.
+  /// For each pair of consecutive blocks, precomputes all K² possible sums.
+  ///
+  /// Cost: `num_pairs * K² * (1 point addition)` precomputation.
+  /// For K=16, num_blocks=1024: 512 pairs × 256 entries = 131072 additions.
+  pub fn new(bases: &[C], block_size: usize, num_blocks: usize) -> Self {
+    assert!(block_size > 0);
+    assert!(bases.len() >= num_blocks * block_size);
+
+    let num_pairs = num_blocks / 2;
+    let k = block_size;
+
+    // Precompute tables in parallel, one per pair
+    let tables: Vec<Vec<C>> = (0..num_pairs)
+      .into_par_iter()
+      .map(|pair_idx| {
+        let block_a_start = 2 * pair_idx * k;
+        let block_b_start = (2 * pair_idx + 1) * k;
+
+        let mut table = Vec::with_capacity(k * k);
+        for a in 0..k {
+          let pa = bases[block_a_start + a];
+          for b in 0..k {
+            let pb = bases[block_b_start + b];
+            // Store the affine sum: pa + pb
+            let sum: C = (C::Curve::identity() + pa + pb).into();
+            table.push(sum);
+          }
+        }
+        table
+      })
+      .collect();
+
+    // Handle the odd block (if num_blocks is odd)
+    let leftover_bases = if num_blocks % 2 == 1 {
+      let last_block_start = (num_blocks - 1) * k;
+      Some(bases[last_block_start..last_block_start + k].to_vec())
+    } else {
+      None
+    };
+
+    Self {
+      tables,
+      block_size: k,
+      num_blocks,
+      leftover_bases,
+    }
+  }
+
+  /// Commit using precomputed tables.
+  ///
+  /// `block_offsets[i]` is the offset within block `i` (0 <= offset < K).
+  ///
+  /// For each pair of blocks, performs a single table lookup instead of two point additions.
+  /// The final accumulation of pair results uses XYZZ coordinates with prefetch.
+  pub fn batch_add(&self, block_offsets: &[usize]) -> C::Curve {
+    assert_eq!(block_offsets.len(), self.num_blocks);
+    let k = self.block_size;
+    let num_pairs = self.num_blocks / 2;
+
+    if num_pairs == 0 {
+      // Only 0 or 1 blocks
+      if self.num_blocks == 1 {
+        if let Some(ref leftover) = self.leftover_bases {
+          return C::Curve::identity() + leftover[block_offsets[0]];
+        }
+      }
+      return C::Curve::identity();
+    }
+
+    let num_threads = current_num_threads();
+
+    let pair_result = if num_pairs > num_threads {
+      let chunk_size = num_pairs.div_ceil(num_threads);
+
+      let bucket = (0..num_pairs)
+        .into_par_iter()
+        .chunks(chunk_size)
+        .map(|pair_indices| {
+          let mut bucket = BucketXYZZ::<C::Base>::zero();
+          for (local_idx, &pair_idx) in pair_indices.iter().enumerate() {
+            // Prefetch the next table entry
+            if local_idx + 1 < pair_indices.len() {
+              let next_pair = pair_indices[local_idx + 1];
+              let next_a = block_offsets[2 * next_pair];
+              let next_b = block_offsets[2 * next_pair + 1];
+              let next_table_idx = next_a * k + next_b;
+              prefetch_read(self.tables[next_pair].as_ptr().wrapping_add(next_table_idx));
+            }
+
+            let a = block_offsets[2 * pair_idx];
+            let b = block_offsets[2 * pair_idx + 1];
+            debug_assert!(a < k && b < k);
+            let table_idx = a * k + b;
+            bucket_add_affine::<C>(&mut bucket, &self.tables[pair_idx][table_idx]);
+          }
+          bucket
+        })
+        .reduce(BucketXYZZ::zero, |mut a, b| {
+          a.add_assign_bucket(&b);
+          a
+        });
+
+      bucket_to_curve::<C>(&bucket)
+    } else {
+      // Sequential with prefetch
+      let mut bucket = BucketXYZZ::<C::Base>::zero();
+      for pair_idx in 0..num_pairs {
+        if pair_idx + 1 < num_pairs {
+          let next_a = block_offsets[2 * (pair_idx + 1)];
+          let next_b = block_offsets[2 * (pair_idx + 1) + 1];
+          let next_table_idx = next_a * k + next_b;
+          prefetch_read(
+            self.tables[pair_idx + 1]
+              .as_ptr()
+              .wrapping_add(next_table_idx),
+          );
+        }
+
+        let a = block_offsets[2 * pair_idx];
+        let b = block_offsets[2 * pair_idx + 1];
+        debug_assert!(a < k && b < k);
+        let table_idx = a * k + b;
+        bucket_add_affine::<C>(&mut bucket, &self.tables[pair_idx][table_idx]);
+      }
+      if bucket.is_zero() {
+        C::Curve::identity()
+      } else {
+        bucket_to_curve::<C>(&bucket)
+      }
+    };
+
+    // Add the odd block if present
+    if let Some(ref leftover) = self.leftover_bases {
+      let last_offset = block_offsets[self.num_blocks - 1];
+      debug_assert!(last_offset < k);
+      pair_result + leftover[last_offset]
+    } else {
+      pair_result
+    }
+  }
+}
+
+/// Precomputed table for one-hot block triples (t=3).
+///
+/// For each consecutive triple of blocks `(3i, 3i+1, 3i+2)`, the table stores all `K³`
+/// possible sums `bases[3i*K + a] + bases[(3i+1)*K + b] + bases[(3i+2)*K + c]`.
+/// This turns three point additions into a single table lookup.
+///
+/// For K=16, each triple needs 4096 precomputed points (~256 KB per triple).
+pub struct OneHotPrecompTable3<C: CurveAffine> {
+  /// Precomputed sums for each block triple: tables[triple][a * K² + b * K + c]
+  tables: Vec<Vec<C>>,
+  /// Block size K
+  block_size: usize,
+  /// Total number of blocks
+  num_blocks: usize,
+  /// Number of full triples
+  num_triples: usize,
+  /// Leftover blocks (0, 1, or 2 blocks that don't form a full triple)
+  leftover_bases: Vec<Vec<C>>,
+}
+
+impl<C: CurveAffine> OneHotPrecompTable3<C> {
+  /// Build t=3 precomputation tables.
+  ///
+  /// Cost: `num_triples * K³` point additions.
+  /// For K=16, 2^20 blocks: 349,525 triples × 4096 entries ≈ 1.43 billion additions.
+  pub fn new(bases: &[C], block_size: usize, num_blocks: usize) -> Self {
+    assert!(block_size > 0);
+    assert!(bases.len() >= num_blocks * block_size);
+
+    let k = block_size;
+    let num_triples = num_blocks / 3;
+    let leftover_count = num_blocks % 3;
+
+    // Precompute tables in parallel, one per triple
+    let tables: Vec<Vec<C>> = (0..num_triples)
+      .into_par_iter()
+      .map(|triple_idx| {
+        let ba = 3 * triple_idx * k;
+        let bb = (3 * triple_idx + 1) * k;
+        let bc = (3 * triple_idx + 2) * k;
+
+        let mut table = Vec::with_capacity(k * k * k);
+        for a in 0..k {
+          let pa = bases[ba + a];
+          for b in 0..k {
+            let pab = C::Curve::identity() + pa + bases[bb + b];
+            for c in 0..k {
+              let sum: C = (pab + bases[bc + c]).into();
+              table.push(sum);
+            }
+          }
+        }
+        table
+      })
+      .collect();
+
+    // Collect leftover blocks (those not forming a full triple)
+    let leftover_bases: Vec<Vec<C>> = (0..leftover_count)
+      .map(|i| {
+        let block_start = (num_triples * 3 + i) * k;
+        bases[block_start..block_start + k].to_vec()
+      })
+      .collect();
+
+    Self {
+      tables,
+      block_size: k,
+      num_blocks,
+      num_triples,
+      leftover_bases,
+    }
+  }
+
+  /// Commit using t=3 precomputed tables.
+  pub fn batch_add(&self, block_offsets: &[usize]) -> C::Curve {
+    assert_eq!(block_offsets.len(), self.num_blocks);
+    let k = self.block_size;
+    let k2 = k * k;
+
+    if self.num_triples == 0 {
+      // No full triples, just add leftovers
+      let mut acc = C::Curve::identity();
+      for (i, bases) in self.leftover_bases.iter().enumerate() {
+        let block_idx = i;
+        acc += bases[block_offsets[block_idx]];
+      }
+      return acc;
+    }
+
+    let num_threads = current_num_threads();
+
+    let triple_result = if self.num_triples > num_threads {
+      let chunk_size = self.num_triples.div_ceil(num_threads);
+
+      let bucket = (0..self.num_triples)
+        .into_par_iter()
+        .chunks(chunk_size)
+        .map(|triple_indices| {
+          let mut bucket = BucketXYZZ::<C::Base>::zero();
+          for (local_idx, &triple_idx) in triple_indices.iter().enumerate() {
+            if local_idx + 1 < triple_indices.len() {
+              let next = triple_indices[local_idx + 1];
+              let na = block_offsets[3 * next];
+              let nb = block_offsets[3 * next + 1];
+              let nc = block_offsets[3 * next + 2];
+              prefetch_read(
+                self.tables[next]
+                  .as_ptr()
+                  .wrapping_add(na * k2 + nb * k + nc),
+              );
+            }
+
+            let a = block_offsets[3 * triple_idx];
+            let b = block_offsets[3 * triple_idx + 1];
+            let c = block_offsets[3 * triple_idx + 2];
+            debug_assert!(a < k && b < k && c < k);
+            let table_idx = a * k2 + b * k + c;
+            bucket_add_affine::<C>(&mut bucket, &self.tables[triple_idx][table_idx]);
+          }
+          bucket
+        })
+        .reduce(BucketXYZZ::zero, |mut a, b| {
+          a.add_assign_bucket(&b);
+          a
+        });
+
+      bucket_to_curve::<C>(&bucket)
+    } else {
+      let mut bucket = BucketXYZZ::<C::Base>::zero();
+      for triple_idx in 0..self.num_triples {
+        if triple_idx + 1 < self.num_triples {
+          let next = triple_idx + 1;
+          let na = block_offsets[3 * next];
+          let nb = block_offsets[3 * next + 1];
+          let nc = block_offsets[3 * next + 2];
+          prefetch_read(
+            self.tables[next]
+              .as_ptr()
+              .wrapping_add(na * k2 + nb * k + nc),
+          );
+        }
+
+        let a = block_offsets[3 * triple_idx];
+        let b = block_offsets[3 * triple_idx + 1];
+        let c = block_offsets[3 * triple_idx + 2];
+        debug_assert!(a < k && b < k && c < k);
+        let table_idx = a * k2 + b * k + c;
+        bucket_add_affine::<C>(&mut bucket, &self.tables[triple_idx][table_idx]);
+      }
+      if bucket.is_zero() {
+        C::Curve::identity()
+      } else {
+        bucket_to_curve::<C>(&bucket)
+      }
+    };
+
+    // Add leftover blocks
+    let mut result = triple_result;
+    for (i, bases) in self.leftover_bases.iter().enumerate() {
+      let block_idx = self.num_triples * 3 + i;
+      result += bases[block_offsets[block_idx]];
+    }
+    result
+  }
+}
+
+// ==================================================================================
+// Batch one-hot commit: parallel transpose (block-major order)
+// ==================================================================================
+
+/// Batch addition for multiple one-hot vectors simultaneously, using transposed iteration order.
+///
+/// Instead of computing each commit independently (commit-major order),
+/// this iterates in block-major order: for each block, load the generators once
+/// and distribute to all commits that select them. This reduces generator memory
+/// reads from `num_commits × num_blocks` (random access) to `num_blocks × K` (sequential).
+///
+/// # Arguments
+/// * `bases` — full generator array of length `num_blocks × block_size`
+/// * `block_size` — K (elements per block)
+/// * `all_offsets` — `all_offsets[commit_idx][block_idx]` = offset within that block
+///
+/// # Returns
+/// One projective point per commit: `results[i]` = sum of selected generators for commit `i`.
+pub fn batch_add_one_hot_transpose<C: CurveAffine>(
+  bases: &[C],
+  block_size: usize,
+  all_offsets: &[&[usize]],
+) -> Vec<C::Curve> {
+  let num_commits = all_offsets.len();
+  if num_commits == 0 {
+    return vec![];
+  }
+
+  let num_blocks = all_offsets[0].len();
+  let k = block_size;
+  assert!(bases.len() >= num_blocks * k);
+  for offsets in all_offsets.iter() {
+    assert_eq!(offsets.len(), num_blocks);
+  }
+
+  let num_threads = current_num_threads();
+  let blocks_per_thread = num_blocks.div_ceil(num_threads);
+
+  // Each thread processes a range of blocks and maintains its own set of accumulators.
+  // Accumulator per commit = one BucketXYZZ (~128 bytes).
+  // 600 commits × 128 bytes = ~75 KB per thread → fits in L1/L2 cache.
+  let partial_results: Vec<Vec<BucketXYZZ<C::Base>>> = (0..num_threads)
+    .into_par_iter()
+    .map(|thread_idx| {
+      let block_start = thread_idx * blocks_per_thread;
+      let block_end = (block_start + blocks_per_thread).min(num_blocks);
+      if block_start >= block_end {
+        return vec![BucketXYZZ::zero(); num_commits];
+      }
+
+      let mut accumulators: Vec<BucketXYZZ<C::Base>> = vec![BucketXYZZ::zero(); num_commits];
+
+      for block_b in block_start..block_end {
+        let base_idx = block_b * k;
+
+        // Prefetch next block's generators
+        if block_b + 1 < block_end {
+          prefetch_read(bases.as_ptr().wrapping_add((block_b + 1) * k));
+        }
+
+        // For each commit, look up its offset for this block,
+        // fetch the corresponding generator, and add to its accumulator.
+        // No branching — every commit does exactly one addition per block.
+        for (i, offsets) in all_offsets.iter().enumerate() {
+          let v = offsets[block_b];
+          debug_assert!(v < k);
+          bucket_add_affine::<C>(&mut accumulators[i], &bases[base_idx + v]);
+        }
+      }
+
+      accumulators
+    })
+    .collect();
+
+  // Merge partial results from all threads: for each commit, sum across threads
+  (0..num_commits)
+    .into_par_iter()
+    .map(|commit_idx| {
+      let mut merged = BucketXYZZ::<C::Base>::zero();
+      for thread_result in &partial_results {
+        merged.add_assign_bucket(&thread_result[commit_idx]);
+      }
+      if merged.is_zero() {
+        C::Curve::identity()
+      } else {
+        bucket_to_curve::<C>(&merged)
+      }
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -827,5 +1342,211 @@ mod tests {
     test_msm_ux_with::<grumpkin::Scalar, grumpkin::Affine>();
     test_msm_ux_with::<secp256k1::Scalar, secp256k1::Affine>();
     test_msm_ux_with::<secq256k1::Scalar, secq256k1::Affine>();
+  }
+
+  // ==================================================================================
+  // One-hot batch add tests
+  // ==================================================================================
+
+  /// Test that batch_add_one_hot matches naive computation (sum of selected generators).
+  fn test_one_hot_correctness_with<A: CurveAffine>() {
+    let k: usize = 16;
+    for &num_blocks in &[1, 2, 3, 7, 16, 64, 128] {
+      let n = num_blocks * k;
+      let bases: Vec<A> = (0..n)
+        .map(|_| A::from(A::generator() * A::Scalar::random(OsRng)))
+        .collect();
+
+      // Generate random one-hot offsets
+      let offsets: Vec<usize> = (0..num_blocks)
+        .map(|_| (rand::random::<usize>()) % k)
+        .collect();
+
+      // Compute with one-hot function
+      let result_one_hot = batch_add_one_hot::<A>(&bases, k, &offsets);
+
+      // Compute naively: sum of bases[i * k + offsets[i]] for each block
+      let naive = offsets
+        .iter()
+        .enumerate()
+        .fold(A::CurveExt::identity(), |acc, (i, &offset)| {
+          acc + bases[i * k + offset]
+        });
+
+      assert_eq!(
+        result_one_hot, naive,
+        "one-hot mismatch at num_blocks={num_blocks}"
+      );
+
+      // Also verify it matches batch_add with equivalent indices
+      let global_indices: Vec<usize> = offsets
+        .iter()
+        .enumerate()
+        .map(|(i, &offset)| i * k + offset)
+        .collect();
+      let result_sparse = batch_add::<A>(&bases, &global_indices);
+      assert_eq!(
+        result_one_hot, result_sparse,
+        "one-hot vs sparse mismatch at num_blocks={num_blocks}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_one_hot_correctness() {
+    test_one_hot_correctness_with::<pallas::Affine>();
+    test_one_hot_correctness_with::<bn256::Affine>();
+    test_one_hot_correctness_with::<secp256k1::Affine>();
+  }
+
+  /// Test that all offsets pointing to the same position still works correctly.
+  fn test_one_hot_same_offset_with<A: CurveAffine>() {
+    let k: usize = 16;
+    let num_blocks = 32;
+    let n = num_blocks * k;
+    let bases: Vec<A> = (0..n)
+      .map(|_| A::from(A::generator() * A::Scalar::random(OsRng)))
+      .collect();
+
+    // All offsets = 0 (first element of each block)
+    let offsets = vec![0usize; num_blocks];
+    let result = batch_add_one_hot::<A>(&bases, k, &offsets);
+    let naive = (0..num_blocks).fold(A::CurveExt::identity(), |acc, i| acc + bases[i * k]);
+    assert_eq!(result, naive);
+
+    // All offsets = k-1 (last element of each block)
+    let offsets = vec![k - 1; num_blocks];
+    let result = batch_add_one_hot::<A>(&bases, k, &offsets);
+    let naive = (0..num_blocks).fold(A::CurveExt::identity(), |acc, i| acc + bases[i * k + k - 1]);
+    assert_eq!(result, naive);
+  }
+
+  #[test]
+  fn test_one_hot_same_offset() {
+    test_one_hot_same_offset_with::<pallas::Affine>();
+    test_one_hot_same_offset_with::<bn256::Affine>();
+  }
+
+  /// Test precomputed table correctness against naive and batch_add_one_hot.
+  fn test_one_hot_precomp_with<A: CurveAffine>() {
+    let k: usize = 16;
+    for &num_blocks in &[1, 2, 3, 4, 7, 15, 16, 33, 64] {
+      let n = num_blocks * k;
+      let bases: Vec<A> = (0..n)
+        .map(|_| A::from(A::generator() * A::Scalar::random(OsRng)))
+        .collect();
+
+      let table = OneHotPrecompTable::new(&bases, k, num_blocks);
+
+      let offsets: Vec<usize> = (0..num_blocks)
+        .map(|_| (rand::random::<usize>()) % k)
+        .collect();
+
+      let result_precomp = table.batch_add(&offsets);
+      let result_one_hot = batch_add_one_hot::<A>(&bases, k, &offsets);
+
+      assert_eq!(
+        result_precomp, result_one_hot,
+        "precomp mismatch at num_blocks={num_blocks}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_one_hot_precomp() {
+    test_one_hot_precomp_with::<pallas::Affine>();
+    test_one_hot_precomp_with::<bn256::Affine>();
+    test_one_hot_precomp_with::<secp256k1::Affine>();
+  }
+
+  /// Test single-block edge cases for precomputed tables.
+  #[test]
+  fn test_one_hot_precomp_single_block() {
+    type A = pallas::Affine;
+    let k: usize = 16;
+    let bases: Vec<A> = (0..k)
+      .map(|_| A::from(A::generator() * pallas::Scalar::random(OsRng)))
+      .collect();
+
+    let table = OneHotPrecompTable::new(&bases, k, 1);
+    for offset in 0..k {
+      let result = table.batch_add(&[offset]);
+      // Verify against batch_add_one_hot which we already tested
+      let expected = batch_add_one_hot::<A>(&bases, k, &[offset]);
+      assert_eq!(result, expected);
+    }
+  }
+
+  /// Test t=3 precomputed table correctness.
+  fn test_one_hot_precomp3_with<A: CurveAffine>() {
+    let k: usize = 16;
+    for &num_blocks in &[3, 4, 6, 7, 9, 15, 16, 33, 64] {
+      let n = num_blocks * k;
+      let bases: Vec<A> = (0..n)
+        .map(|_| A::from(A::generator() * A::Scalar::random(OsRng)))
+        .collect();
+
+      let table = OneHotPrecompTable3::new(&bases, k, num_blocks);
+
+      let offsets: Vec<usize> = (0..num_blocks)
+        .map(|_| (rand::random::<usize>()) % k)
+        .collect();
+
+      let result_precomp = table.batch_add(&offsets);
+      let result_one_hot = batch_add_one_hot::<A>(&bases, k, &offsets);
+
+      assert_eq!(
+        result_precomp, result_one_hot,
+        "precomp3 mismatch at num_blocks={num_blocks}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_one_hot_precomp3() {
+    test_one_hot_precomp3_with::<pallas::Affine>();
+    test_one_hot_precomp3_with::<bn256::Affine>();
+    test_one_hot_precomp3_with::<secp256k1::Affine>();
+  }
+
+  /// Test batch transpose correctness: results must match individual one-hot commits.
+  fn test_batch_transpose_with<A: CurveAffine>() {
+    let k: usize = 16;
+    let num_blocks = 64;
+    let n = num_blocks * k;
+    let bases: Vec<A> = (0..n)
+      .map(|_| A::from(A::generator() * A::Scalar::random(OsRng)))
+      .collect();
+
+    for &num_commits in &[1, 2, 10, 50, 100] {
+      // Generate random offsets for each commit
+      let all_offsets: Vec<Vec<usize>> = (0..num_commits)
+        .map(|_| {
+          (0..num_blocks)
+            .map(|_| rand::random::<usize>() % k)
+            .collect()
+        })
+        .collect();
+
+      let all_offsets_refs: Vec<&[usize]> = all_offsets.iter().map(|v| v.as_slice()).collect();
+
+      // Compute with transpose batch
+      let batch_results = batch_add_one_hot_transpose::<A>(&bases, k, &all_offsets_refs);
+
+      // Compute each individually
+      for (i, offsets) in all_offsets.iter().enumerate() {
+        let individual = batch_add_one_hot::<A>(&bases, k, offsets);
+        assert_eq!(
+          batch_results[i], individual,
+          "transpose mismatch at commit={i}, num_commits={num_commits}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn test_batch_transpose() {
+    test_batch_transpose_with::<pallas::Affine>();
+    test_batch_transpose_with::<bn256::Affine>();
   }
 }
