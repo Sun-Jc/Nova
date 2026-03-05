@@ -109,20 +109,69 @@ pub trait CommitmentEngineTrait<E: Engine>: Clone + Send + Sync {
     r: &E::Scalar,
   ) -> Self::Commitment;
 
+  /// Holds the type of the precomputed one-hot table.
+  ///
+  /// The table precomputes pairwise sums of generators for each consecutive pair of
+  /// blocks (t=2). This halves the number of point additions during batch commits.
+  type OneHotTable: Send + Sync;
+
   /// Commits to a one-hot structured vector where each block of `block_size` elements
   /// has exactly one non-zero (=1) entry at the specified offset.
   ///
   /// `block_offsets[i]` gives the offset within block `i` (`0 <= offset < block_size`).
   /// The global index for block `i` is `i * block_size + block_offsets[i]`.
-  ///
-  /// This method uses software prefetch hints to hide memory latency from the strided
-  /// access pattern inherent to one-hot commitment.
   fn commit_one_hot(
     ck: &Self::CommitmentKey,
     block_size: usize,
     block_offsets: &[usize],
     r: &E::Scalar,
   ) -> Self::Commitment;
+
+  /// Batch commits to multiple one-hot structured vectors.
+  ///
+  /// Default implementation uses `par_iter` over individual `commit_one_hot` calls.
+  fn batch_commit_one_hot(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment> {
+    assert_eq!(all_offsets.len(), r.len());
+    all_offsets
+      .par_iter()
+      .zip(r.par_iter())
+      .map(|(offsets, r_i)| Self::commit_one_hot(ck, block_size, offsets, r_i))
+      .collect()
+  }
+
+  /// Builds a precomputed one-hot table for the given commitment key.
+  ///
+  /// The table precomputes K² pairwise sums for each consecutive pair of blocks,
+  /// enabling `batch_commit_one_hot_with_table` to halve point additions.
+  ///
+  /// One-time cost: `(num_blocks / 2) × K²` point additions.
+  /// Memory: `(num_blocks / 2) × K²` affine points (for K=16, ~8 GB at 2^20 blocks).
+  fn build_one_hot_table(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    num_blocks: usize,
+  ) -> Self::OneHotTable;
+
+  /// Batch commits using a precomputed one-hot table with transposed iteration.
+  ///
+  /// Combines precomputed pair tables (t=2) with block-major iteration order.
+  /// Each pair of blocks requires only 1 table lookup instead of 2 point additions,
+  /// and the transposed order keeps per-commit accumulators hot in cache.
+  ///
+  /// Benchmark (BN256, K=16, 2^20 blocks, 600 commits):
+  /// - `batch_commit_one_hot` (default): 24.8s
+  /// - `batch_commit_one_hot_with_table`: 9.3s (2.66× faster)
+  fn batch_commit_one_hot_with_table(
+    ck: &Self::CommitmentKey,
+    table: &Self::OneHotTable,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment>;
 
   /// Commits to the provided vector of "small" scalars (at most 64 bits) using the provided generators and random blind
   fn commit_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(

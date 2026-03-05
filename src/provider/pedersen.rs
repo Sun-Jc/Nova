@@ -1,6 +1,7 @@
 //! This module provides an implementation of a commitment engine
 use crate::provider::msm::batch_add;
 use crate::provider::msm::batch_add_one_hot;
+use crate::provider::msm::{batch_add_one_hot_precomp_transpose, OneHotPrecompTable};
 #[cfg(feature = "io")]
 use crate::provider::ptau::{read_points, write_points, PtauFileError};
 use crate::traits::evm_serde::EvmCompatSerde;
@@ -262,6 +263,7 @@ where
   type CommitmentKey = CommitmentKey<E>;
   type Commitment = Commitment<E>;
   type DerandKey = DerandKey<E>;
+  type OneHotTable = OneHotPrecompTable<<E::GE as DlogGroup>::AffineGroupElement>;
 
   fn setup(label: &'static [u8], n: usize) -> Result<Self::CommitmentKey, NovaError> {
     let gens = E::GE::from_label(label, n.next_power_of_two() + 1);
@@ -416,6 +418,37 @@ where
     }
 
     Commitment { comm }
+  }
+
+  fn build_one_hot_table(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    num_blocks: usize,
+  ) -> Self::OneHotTable {
+    OneHotPrecompTable::new(&ck.ck, block_size, num_blocks)
+  }
+
+  fn batch_commit_one_hot_with_table(
+    ck: &Self::CommitmentKey,
+    table: &Self::OneHotTable,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment> {
+    assert_eq!(all_offsets.len(), r.len());
+    let refs: Vec<&[usize]> = all_offsets.iter().map(|v| v.as_slice()).collect();
+    let comms = batch_add_one_hot_precomp_transpose(table, &refs);
+
+    comms
+      .into_iter()
+      .zip(r.iter())
+      .map(|(comm, r_i)| {
+        let mut comm = <E::GE as DlogGroup>::group(&comm.into());
+        if r_i != &E::Scalar::ZERO {
+          comm += <E::GE as DlogGroup>::group(&ck.h) * *r_i;
+        }
+        Commitment { comm }
+      })
+      .collect()
   }
 }
 
