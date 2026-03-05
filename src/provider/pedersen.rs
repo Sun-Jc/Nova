@@ -1,5 +1,6 @@
 //! This module provides an implementation of a commitment engine
 use crate::provider::msm::batch_add;
+use crate::provider::msm::batch_add_one_hot;
 #[cfg(feature = "io")]
 use crate::provider::ptau::{read_points, write_points, PtauFileError};
 use crate::traits::evm_serde::EvmCompatSerde;
@@ -227,6 +228,11 @@ impl<E: Engine> CommitmentKey<E>
 where
   E::GE: DlogGroup,
 {
+  /// Returns a reference to the underlying affine generators.
+  pub fn ck(&self) -> &[<E::GE as DlogGroup>::AffineGroupElement] {
+    &self.ck
+  }
+
   /// Returns the coordinates of the generator points.
   ///
   /// This method extracts the (x, y) coordinates of each generator point
@@ -387,6 +393,22 @@ where
     r: &<E as Engine>::Scalar,
   ) -> Self::Commitment {
     let comm = batch_add(&ck.ck, non_zero_indices);
+    let mut comm = <E::GE as DlogGroup>::group(&comm.into());
+
+    if r != &E::Scalar::ZERO {
+      comm += <E::GE as DlogGroup>::group(&ck.h) * r;
+    }
+
+    Commitment { comm }
+  }
+
+  fn commit_one_hot(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    block_offsets: &[usize],
+    r: &<E as Engine>::Scalar,
+  ) -> Self::Commitment {
+    let comm = batch_add_one_hot(&ck.ck, block_size, block_offsets);
     let mut comm = <E::GE as DlogGroup>::group(&comm.into());
 
     if r != &E::Scalar::ZERO {

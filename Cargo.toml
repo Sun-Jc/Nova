@@ -80,6 +80,26 @@ harness = false
 name = "sumcheckeq"
 harness = false
 
+[[bench]]
+name = "one-hot-commit"
+harness = false
+
+[[bench]]
+name = "one-hot-small"
+harness = false
+
+[[bench]]
+name = "one-hot-real"
+harness = false
+
+[[bench]]
+name = "table-build-full"
+harness = false
+
+[[bench]]
+name = "batch-600"
+harness = false
+
 [[example]]
 name = "ptau_test_setup"
 required-features = ["test-utils", "io"]
