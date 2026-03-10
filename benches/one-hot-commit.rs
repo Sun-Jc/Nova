@@ -1,11 +1,12 @@
 //! Benchmark: one-hot batch commitment.
 //!
-//! Block size K=16, 2^20 blocks (16M elements).
-//! Compares sparse_binary baseline vs batch_commit_one_hot at batch sizes 1, 16, 64, 256.
+//! Block size K=16, varying scales (2^16, 2^18, 2^20 blocks).
+//! Compares commit-major (batch_add_one_hot) vs block-major (batch_add_one_hot_block)
+//! at batch sizes 1, 16, 64, 256.
 use core::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nova_snark::{
-  provider::Bn256EngineKZG,
+  provider::{msm::batch_add_one_hot_block, Bn256EngineKZG},
   traits::{commitment::CommitmentEngineTrait, Engine},
 };
 use rand::Rng;
@@ -25,56 +26,45 @@ fn random_offsets(num_blocks: usize, block_size: usize) -> Vec<usize> {
     .collect()
 }
 
-fn offsets_to_global_indices(offsets: &[usize], block_size: usize) -> Vec<usize> {
-  offsets
-    .iter()
-    .enumerate()
-    .map(|(i, &offset)| i * block_size + offset)
-    .collect()
-}
-
 fn bench_one_hot(c: &mut Criterion) {
   type E = Bn256EngineKZG;
   let k: usize = 16;
-  let num_blocks: usize = 1 << 20;
-  let total_size = num_blocks * k;
-  let zero = <E as Engine>::Scalar::default();
 
-  let ck = <E as Engine>::CE::setup(b"bench_one_hot", total_size).unwrap();
+  for log_blocks in [16, 18, 20] {
+    let num_blocks: usize = 1 << log_blocks;
+    let total_size = num_blocks * k;
+    let zero = <E as Engine>::Scalar::default();
 
-  let mut group = c.benchmark_group(format!("one_hot_K{k}_2^20"));
+    let ck = <E as Engine>::CE::setup(b"bench_one_hot", total_size).unwrap();
 
-  // Baseline: single commit via commit_sparse_binary
-  let offsets = random_offsets(num_blocks, k);
-  let global_indices = offsets_to_global_indices(&offsets, k);
-  group.bench_function("sparse_binary_x1", |b| {
-    b.iter(|| {
-      black_box(<E as Engine>::CE::commit_sparse_binary(
-        &ck,
-        &global_indices,
-        &zero,
-      ))
-    });
-  });
+    let mut group = c.benchmark_group(format!("one_hot_K{k}_2^{log_blocks}"));
 
-  // batch_commit_one_hot at four batch sizes
-  for batch_size in [1, 16, 64, 256] {
-    let all_offsets: Vec<Vec<usize>> = (0..batch_size)
-      .map(|_| random_offsets(num_blocks, k))
-      .collect();
-    let all_r = vec![zero; batch_size];
+    for batch_size in [1, 16, 64, 256] {
+      let all_offsets: Vec<Vec<usize>> = (0..batch_size)
+        .map(|_| random_offsets(num_blocks, k))
+        .collect();
+      let all_r = vec![zero; batch_size];
 
-    group.bench_function(&format!("batch_one_hot_x{batch_size}"), |b| {
-      b.iter(|| {
-        black_box(<E as Engine>::CE::batch_commit_one_hot(
-          &ck,
-          k,
-          &all_offsets,
-          &all_r,
-        ))
+      // Commit-major (current baseline)
+      group.bench_function(&format!("commit_major_x{batch_size}"), |b| {
+        b.iter(|| {
+          black_box(<E as Engine>::CE::batch_commit_one_hot(
+            &ck,
+            k,
+            &all_offsets,
+            &all_r,
+          ))
+        });
       });
-    });
-  }
 
-  group.finish();
+      // Block-major (new optimization)
+      group.bench_function(&format!("block_major_x{batch_size}"), |b| {
+        b.iter(|| {
+          black_box(batch_add_one_hot_block(ck.ck(), k, &all_offsets))
+        });
+      });
+    }
+
+    group.finish();
+  }
 }

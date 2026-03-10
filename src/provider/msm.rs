@@ -739,6 +739,60 @@ pub(crate) fn batch_add_one_hot<C: CurveAffine>(
     .collect()
 }
 
+/// Batch addition for one-hot vectors using block-major (transposed) iteration.
+///
+/// Instead of processing each commit independently, iterates blocks sequentially:
+/// for each block, loads generators once and adds to all commits' accumulators.
+/// Reduces generator memory reads from `N × B` random accesses to `B × K` sequential.
+///
+/// Each thread handles a contiguous range of blocks and maintains per-commit accumulators.
+/// Final merge sums partial results across threads.
+pub fn batch_add_one_hot_block<C: CurveAffine>(
+  bases: &[C],
+  block_size: usize,
+  all_offsets: &[Vec<usize>],
+) -> Vec<C::Curve> {
+  let num_commits = all_offsets.len();
+  if num_commits == 0 {
+    return vec![];
+  }
+
+  let num_blocks = all_offsets[0].len();
+  let k = block_size;
+  debug_assert!(bases.len() >= num_blocks * k);
+
+  let num_threads = current_num_threads();
+  let blocks_per_thread = num_blocks.div_ceil(num_threads);
+
+  // Each thread processes a range of blocks, maintaining per-commit accumulators.
+  let partial: Vec<Vec<C::Curve>> = (0..num_threads)
+    .into_par_iter()
+    .map(|t| {
+      let b_start = t * blocks_per_thread;
+      let b_end = (b_start + blocks_per_thread).min(num_blocks);
+      let mut accs = vec![C::Curve::identity(); num_commits];
+
+      for b in b_start..b_end {
+        let base_idx = b * k;
+        for (i, offsets) in all_offsets.iter().enumerate() {
+          accs[i] += bases[base_idx + offsets[b]];
+        }
+      }
+      accs
+    })
+    .collect();
+
+  // Merge: for each commit, sum across threads
+  (0..num_commits)
+    .into_par_iter()
+    .map(|i| {
+      partial
+        .iter()
+        .fold(C::Curve::identity(), |acc, thread_accs| acc + thread_accs[i])
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -856,5 +910,41 @@ mod tests {
     test_batch_add_one_hot_with::<grumpkin::Scalar, grumpkin::Affine>();
     test_batch_add_one_hot_with::<secp256k1::Scalar, secp256k1::Affine>();
     test_batch_add_one_hot_with::<secq256k1::Scalar, secq256k1::Affine>();
+  }
+
+  fn test_batch_add_one_hot_block_with<F: PrimeField, A: CurveAffine<ScalarExt = F>>() {
+    let block_size = 16;
+    let num_blocks = 64;
+    let total = num_blocks * block_size;
+    let batch_size = 8;
+
+    let bases: Vec<A> = (0..total)
+      .map(|_| A::from(A::generator() * F::random(OsRng)))
+      .collect();
+
+    let all_offsets: Vec<Vec<usize>> = (0..batch_size)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+
+    let commit_major = batch_add_one_hot(&bases, block_size, &all_offsets);
+    let block_major = batch_add_one_hot_block(&bases, block_size, &all_offsets);
+
+    for (cm, bm) in commit_major.iter().zip(block_major.iter()) {
+      assert_eq!(*cm, *bm);
+    }
+  }
+
+  #[test]
+  fn test_batch_add_one_hot_block() {
+    test_batch_add_one_hot_block_with::<pallas::Scalar, pallas::Affine>();
+    test_batch_add_one_hot_block_with::<vesta::Scalar, vesta::Affine>();
+    test_batch_add_one_hot_block_with::<bn256::Scalar, bn256::Affine>();
+    test_batch_add_one_hot_block_with::<grumpkin::Scalar, grumpkin::Affine>();
+    test_batch_add_one_hot_block_with::<secp256k1::Scalar, secp256k1::Affine>();
+    test_batch_add_one_hot_block_with::<secq256k1::Scalar, secq256k1::Affine>();
   }
 }
