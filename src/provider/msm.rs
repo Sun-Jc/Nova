@@ -814,4 +814,47 @@ mod tests {
     test_msm_ux_with::<secp256k1::Scalar, secp256k1::Affine>();
     test_msm_ux_with::<secq256k1::Scalar, secq256k1::Affine>();
   }
+
+  fn test_batch_add_one_hot_with<F: PrimeField, A: CurveAffine<ScalarExt = F>>() {
+    let block_size = 16;
+    let num_blocks = 64;
+    let total = num_blocks * block_size;
+    let batch_size = 8;
+
+    let bases: Vec<A> = (0..total)
+      .map(|_| A::from(A::generator() * F::random(OsRng)))
+      .collect();
+
+    let all_offsets: Vec<Vec<usize>> = (0..batch_size)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+
+    // Compute via batch_add_one_hot
+    let one_hot_results = batch_add_one_hot(&bases, block_size, &all_offsets);
+
+    // Compute via batch_add (sparse binary path) as reference
+    for (offsets, one_hot_result) in all_offsets.iter().zip(one_hot_results.iter()) {
+      let global_indices: Vec<usize> = offsets
+        .iter()
+        .enumerate()
+        .map(|(block, &off)| block * block_size + off)
+        .collect();
+      let sparse_result = batch_add(&bases, &global_indices);
+      assert_eq!(*one_hot_result, sparse_result);
+    }
+  }
+
+  #[test]
+  fn test_batch_add_one_hot() {
+    test_batch_add_one_hot_with::<pallas::Scalar, pallas::Affine>();
+    test_batch_add_one_hot_with::<vesta::Scalar, vesta::Affine>();
+    test_batch_add_one_hot_with::<bn256::Scalar, bn256::Affine>();
+    test_batch_add_one_hot_with::<grumpkin::Scalar, grumpkin::Affine>();
+    test_batch_add_one_hot_with::<secp256k1::Scalar, secp256k1::Affine>();
+    test_batch_add_one_hot_with::<secq256k1::Scalar, secq256k1::Affine>();
+  }
 }
