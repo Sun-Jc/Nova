@@ -1,5 +1,5 @@
 //! This module provides an implementation of a commitment engine
-use crate::provider::msm::batch_add;
+use crate::provider::msm::{batch_add, batch_add_one_hot};
 #[cfg(feature = "io")]
 use crate::provider::ptau::{read_points, write_points, PtauFileError};
 use crate::traits::evm_serde::EvmCompatSerde;
@@ -404,6 +404,27 @@ where
     }
 
     Commitment { comm }
+  }
+
+  fn batch_commit_one_hot(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment> {
+    assert_eq!(all_offsets.len(), r.len());
+    let comms = batch_add_one_hot(&ck.ck, block_size, all_offsets);
+    comms
+      .into_iter()
+      .zip(r.iter())
+      .map(|(comm, r_i)| {
+        let mut comm = <E::GE as DlogGroup>::group(&comm.into());
+        if r_i != &E::Scalar::ZERO {
+          comm += <E::GE as DlogGroup>::group(&ck.h) * *r_i;
+        }
+        Commitment { comm }
+      })
+      .collect()
   }
 }
 

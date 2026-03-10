@@ -707,6 +707,38 @@ pub(crate) fn batch_add<C: CurveAffine>(bases: &[C], one_indices: &[usize]) -> C
   comm
 }
 
+/// Batch addition for one-hot structured vectors.
+///
+/// For each vector (given as block offsets), sums `bases[block * block_size + offset]`
+/// across all blocks, using rayon par_chunks for inner parallelism.
+/// Returns one curve point per vector.
+pub(crate) fn batch_add_one_hot<C: CurveAffine>(
+  bases: &[C],
+  block_size: usize,
+  all_offsets: &[Vec<usize>],
+) -> Vec<C::Curve> {
+  all_offsets
+    .iter()
+    .map(|offsets| {
+      let num_chunks = current_num_threads();
+      let chunk_size = (offsets.len() + num_chunks).div_ceil(num_chunks);
+
+      offsets
+        .par_chunks(chunk_size)
+        .enumerate()
+        .map(|(chunk_idx, chunk)| {
+          let block_start = chunk_idx * chunk_size;
+          let mut acc = C::Curve::identity();
+          for (i, &off) in chunk.iter().enumerate() {
+            acc += bases[(block_start + i) * block_size + off];
+          }
+          acc
+        })
+        .reduce(C::Curve::identity, |a, b| a + b)
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
