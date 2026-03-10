@@ -109,6 +109,34 @@ pub trait CommitmentEngineTrait<E: Engine>: Clone + Send + Sync {
     r: &E::Scalar,
   ) -> Self::Commitment;
 
+  /// Batch commits to multiple one-hot structured vectors.
+  ///
+  /// Each vector has `block_size`-element blocks with exactly one non-zero (=1) entry per block.
+  /// `all_offsets[i][j]` is the offset within block `j` for the `i`-th vector.
+  ///
+  /// Default implementation converts offsets to global indices and delegates
+  /// to `commit_sparse_binary` sequentially.
+  fn batch_commit_one_hot(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment> {
+    assert_eq!(all_offsets.len(), r.len());
+    all_offsets
+      .iter()
+      .zip(r.iter())
+      .map(|(offsets, r_i)| {
+        let indices: Vec<usize> = offsets
+          .iter()
+          .enumerate()
+          .map(|(block, &off)| block * block_size + off)
+          .collect();
+        Self::commit_sparse_binary(ck, &indices, r_i)
+      })
+      .collect()
+  }
+
   /// Commits to the provided vector of "small" scalars (at most 64 bits) using the provided generators and random blind
   fn commit_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
     ck: &Self::CommitmentKey,
