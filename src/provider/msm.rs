@@ -765,31 +765,37 @@ pub fn batch_add_one_hot_block<C: CurveAffine>(
   let num_threads = current_num_threads();
   let blocks_per_thread = num_blocks.div_ceil(num_threads);
 
-  // Each thread processes a range of blocks, maintaining per-commit accumulators.
-  let partial: Vec<Vec<C::Curve>> = (0..num_threads)
+  // Each thread processes a range of blocks, maintaining per-commit XYZZ accumulators.
+  let partial: Vec<Vec<BucketXYZZ<C::Base>>> = (0..num_threads)
     .into_par_iter()
     .map(|t| {
       let b_start = t * blocks_per_thread;
       let b_end = (b_start + blocks_per_thread).min(num_blocks);
-      let mut accs = vec![C::Curve::identity(); num_commits];
+      let mut accs = vec![BucketXYZZ::zero(); num_commits];
 
       for b in b_start..b_end {
         let base_idx = b * k;
         for (i, offsets) in all_offsets.iter().enumerate() {
-          accs[i] += bases[base_idx + offsets[b]];
+          bucket_add_affine::<C>(&mut accs[i], &bases[base_idx + offsets[b]]);
         }
       }
       accs
     })
     .collect();
 
-  // Merge: for each commit, sum across threads
+  // Merge: for each commit, sum XYZZ buckets across threads and convert
   (0..num_commits)
     .into_par_iter()
     .map(|i| {
-      partial
-        .iter()
-        .fold(C::Curve::identity(), |acc, thread_accs| acc + thread_accs[i])
+      let mut merged = BucketXYZZ::<C::Base>::zero();
+      for thread_accs in &partial {
+        merged.add_assign_bucket(&thread_accs[i]);
+      }
+      if merged.is_zero() {
+        C::Curve::identity()
+      } else {
+        bucket_to_curve::<C>(&merged)
+      }
     })
     .collect()
 }
@@ -881,13 +887,13 @@ pub fn batch_add_precomp_block<C: CurveAffine>(
   let num_threads = current_num_threads();
   let pairs_per_thread = num_pairs.div_ceil(num_threads);
 
-  // Each thread processes a range of pairs, maintaining per-commit accumulators.
-  let partial: Vec<Vec<C::Curve>> = (0..num_threads)
+  // Each thread processes a range of pairs, maintaining per-commit XYZZ accumulators.
+  let partial: Vec<Vec<BucketXYZZ<C::Base>>> = (0..num_threads)
     .into_par_iter()
     .map(|t| {
       let p_start = t * pairs_per_thread;
       let p_end = (p_start + pairs_per_thread).min(num_pairs);
-      let mut accs = vec![C::Curve::identity(); num_commits];
+      let mut accs = vec![BucketXYZZ::zero(); num_commits];
 
       for pair_idx in p_start..p_end {
         let pair_table = &table.tables[pair_idx];
@@ -895,7 +901,7 @@ pub fn batch_add_precomp_block<C: CurveAffine>(
           let a = offsets[2 * pair_idx];
           let b = offsets[2 * pair_idx + 1];
           debug_assert!(a < k && b < k);
-          accs[i] += pair_table[a * k + b];
+          bucket_add_affine::<C>(&mut accs[i], &pair_table[a * k + b]);
         }
       }
       accs
@@ -906,9 +912,15 @@ pub fn batch_add_precomp_block<C: CurveAffine>(
   (0..num_commits)
     .into_par_iter()
     .map(|i| {
-      let mut result = partial
-        .iter()
-        .fold(C::Curve::identity(), |acc, thread_accs| acc + thread_accs[i]);
+      let mut merged = BucketXYZZ::<C::Base>::zero();
+      for thread_accs in &partial {
+        merged.add_assign_bucket(&thread_accs[i]);
+      }
+      let mut result = if merged.is_zero() {
+        C::Curve::identity()
+      } else {
+        bucket_to_curve::<C>(&merged)
+      };
 
       // Add the odd block if present
       if let Some(ref leftover) = table.leftover_bases {
