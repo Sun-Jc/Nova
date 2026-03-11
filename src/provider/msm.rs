@@ -19,6 +19,7 @@ use halo2curves::{group::Group, CurveAffine};
 use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 use rayon::{current_num_threads, prelude::*};
+use serde::{Deserialize, Serialize};
 
 // ==================================================================================
 // XYZZ (Extended Jacobian) Bucket coordinates
@@ -793,6 +794,134 @@ pub fn batch_add_one_hot_block<C: CurveAffine>(
     .collect()
 }
 
+/// Precomputed table for one-hot block pairs.
+///
+/// For each consecutive pair of blocks `(2i, 2i+1)`, stores all `K × K`
+/// possible sums `bases[2i*K + a] + bases[(2i+1)*K + b]` for `a, b in 0..K`.
+/// This turns two point additions into a single table lookup.
+///
+/// Memory: `(num_blocks / 2) × K²` affine points.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(
+  serialize = "C: Serialize",
+  deserialize = "C: Deserialize<'de>"
+))]
+pub struct OneHotPrecompTable<C: CurveAffine> {
+  tables: Vec<Vec<C>>,
+  block_size: usize,
+  num_blocks: usize,
+  leftover_bases: Option<Vec<C>>,
+}
+
+impl<C: CurveAffine> OneHotPrecompTable<C> {
+  /// Build precomputation tables for the given generator bases and block size.
+  ///
+  /// For each pair of consecutive blocks, precomputes all K² possible sums.
+  /// Cost: `num_pairs × K²` point additions, parallelized over pairs.
+  pub fn new(bases: &[C], block_size: usize, num_blocks: usize) -> Self {
+    assert!(block_size > 0);
+    assert!(bases.len() >= num_blocks * block_size);
+
+    let num_pairs = num_blocks / 2;
+    let k = block_size;
+
+    let tables: Vec<Vec<C>> = (0..num_pairs)
+      .into_par_iter()
+      .map(|pair_idx| {
+        let block_a_start = 2 * pair_idx * k;
+        let block_b_start = (2 * pair_idx + 1) * k;
+
+        let mut table = Vec::with_capacity(k * k);
+        for a in 0..k {
+          let pa = bases[block_a_start + a];
+          for b in 0..k {
+            let pb = bases[block_b_start + b];
+            let sum: C = (C::Curve::identity() + pa + pb).into();
+            table.push(sum);
+          }
+        }
+        table
+      })
+      .collect();
+
+    let leftover_bases = if num_blocks % 2 == 1 {
+      let last_block_start = (num_blocks - 1) * k;
+      Some(bases[last_block_start..last_block_start + k].to_vec())
+    } else {
+      None
+    };
+
+    Self {
+      tables,
+      block_size: k,
+      num_blocks,
+      leftover_bases,
+    }
+  }
+}
+
+/// Batch addition for one-hot vectors using precomputed pair tables + block-major iteration.
+///
+/// Each pair of blocks requires a single table lookup instead of 2 point additions.
+/// Combined with block-major iteration, this halves the number of additions
+/// compared to `batch_add_one_hot_block`.
+pub fn batch_add_precomp_block<C: CurveAffine>(
+  table: &OneHotPrecompTable<C>,
+  all_offsets: &[Vec<usize>],
+) -> Vec<C::Curve> {
+  let num_commits = all_offsets.len();
+  if num_commits == 0 {
+    return vec![];
+  }
+
+  let k = table.block_size;
+  let num_blocks = table.num_blocks;
+  let num_pairs = num_blocks / 2;
+
+  let num_threads = current_num_threads();
+  let pairs_per_thread = num_pairs.div_ceil(num_threads);
+
+  // Each thread processes a range of pairs, maintaining per-commit accumulators.
+  let partial: Vec<Vec<C::Curve>> = (0..num_threads)
+    .into_par_iter()
+    .map(|t| {
+      let p_start = t * pairs_per_thread;
+      let p_end = (p_start + pairs_per_thread).min(num_pairs);
+      let mut accs = vec![C::Curve::identity(); num_commits];
+
+      for pair_idx in p_start..p_end {
+        let pair_table = &table.tables[pair_idx];
+        for (i, offsets) in all_offsets.iter().enumerate() {
+          let a = offsets[2 * pair_idx];
+          let b = offsets[2 * pair_idx + 1];
+          debug_assert!(a < k && b < k);
+          accs[i] += pair_table[a * k + b];
+        }
+      }
+      accs
+    })
+    .collect();
+
+  // Merge across threads + handle odd block
+  (0..num_commits)
+    .into_par_iter()
+    .map(|i| {
+      let mut result = partial
+        .iter()
+        .fold(C::Curve::identity(), |acc, thread_accs| acc + thread_accs[i]);
+
+      // Add the odd block if present
+      if let Some(ref leftover) = table.leftover_bases {
+        let last_offset = all_offsets[i][num_blocks - 1];
+        debug_assert!(last_offset < k);
+        result += leftover[last_offset];
+      }
+
+      result
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -946,5 +1075,85 @@ mod tests {
     test_batch_add_one_hot_block_with::<grumpkin::Scalar, grumpkin::Affine>();
     test_batch_add_one_hot_block_with::<secp256k1::Scalar, secp256k1::Affine>();
     test_batch_add_one_hot_block_with::<secq256k1::Scalar, secq256k1::Affine>();
+  }
+
+  fn test_batch_add_precomp_block_with<F: PrimeField, A: CurveAffine<ScalarExt = F>>() {
+    let block_size = 16;
+    let num_blocks = 64;
+    let total = num_blocks * block_size;
+    let batch_size = 8;
+
+    let bases: Vec<A> = (0..total)
+      .map(|_| A::from(A::generator() * F::random(OsRng)))
+      .collect();
+
+    let all_offsets: Vec<Vec<usize>> = (0..batch_size)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+
+    let table = OneHotPrecompTable::new(&bases, block_size, num_blocks);
+    let precomp_results = batch_add_precomp_block(&table, &all_offsets);
+    let block_results = batch_add_one_hot_block(&bases, block_size, &all_offsets);
+
+    for (pr, br) in precomp_results.iter().zip(block_results.iter()) {
+      assert_eq!(*pr, *br);
+    }
+  }
+
+  #[test]
+  fn test_batch_add_precomp_block() {
+    test_batch_add_precomp_block_with::<pallas::Scalar, pallas::Affine>();
+    test_batch_add_precomp_block_with::<vesta::Scalar, vesta::Affine>();
+    test_batch_add_precomp_block_with::<bn256::Scalar, bn256::Affine>();
+    test_batch_add_precomp_block_with::<grumpkin::Scalar, grumpkin::Affine>();
+    test_batch_add_precomp_block_with::<secp256k1::Scalar, secp256k1::Affine>();
+    test_batch_add_precomp_block_with::<secq256k1::Scalar, secq256k1::Affine>();
+  }
+
+  fn test_precomp_table_serde_with<F: PrimeField, A>()
+  where
+    A: CurveAffine<ScalarExt = F> + Serialize + for<'de> Deserialize<'de>,
+  {
+    let block_size = 4;
+    let num_blocks = 8;
+    let total = num_blocks * block_size;
+
+    let bases: Vec<A> = (0..total)
+      .map(|_| A::from(A::generator() * F::random(OsRng)))
+      .collect();
+
+    let table = OneHotPrecompTable::new(&bases, block_size, num_blocks);
+
+    // Serialize and deserialize
+    let encoded =
+      bincode::serde::encode_to_vec(&table, bincode::config::standard()).unwrap();
+    let (decoded, _): (OneHotPrecompTable<A>, _) =
+      bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+
+    // Verify round-trip correctness
+    let offsets: Vec<Vec<usize>> = (0..4)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+
+    let results_orig = batch_add_precomp_block(&table, &offsets);
+    let results_decoded = batch_add_precomp_block(&decoded, &offsets);
+
+    for (a, b) in results_orig.iter().zip(results_decoded.iter()) {
+      assert_eq!(*a, *b);
+    }
+  }
+
+  #[test]
+  fn test_precomp_table_serde() {
+    test_precomp_table_serde_with::<bn256::Scalar, bn256::Affine>();
+    test_precomp_table_serde_with::<pallas::Scalar, pallas::Affine>();
   }
 }

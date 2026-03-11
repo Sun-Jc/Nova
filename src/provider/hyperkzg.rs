@@ -12,7 +12,7 @@ use crate::{
   errors::NovaError,
   gadgets::utils::to_bignat_repr,
   provider::{
-    msm::{batch_add, batch_add_one_hot},
+    msm::{batch_add, batch_add_one_hot, batch_add_precomp_block, OneHotPrecompTable},
     traits::{DlogGroup, DlogGroupExt, PairingGroup},
   },
   traits::{
@@ -517,6 +517,7 @@ where
   type Commitment = Commitment<E>;
   type CommitmentKey = CommitmentKey<E>;
   type DerandKey = DerandKey<E>;
+  type OneHotTable = OneHotPrecompTable<<E::GE as DlogGroup>::AffineGroupElement>;
 
   /// Generate a commitment key with a random tau value.
   ///
@@ -733,6 +734,35 @@ where
   ) -> Vec<Self::Commitment> {
     assert_eq!(all_offsets.len(), r.len());
     let comms = batch_add_one_hot(&ck.ck, block_size, all_offsets);
+    comms
+      .into_iter()
+      .zip(r.iter())
+      .map(|(comm, r_i)| {
+        let mut comm = <E::GE as DlogGroup>::group(&comm.into());
+        if r_i != &E::Scalar::ZERO {
+          comm += <E::GE as DlogGroup>::group(&ck.h) * *r_i;
+        }
+        Commitment { comm }
+      })
+      .collect()
+  }
+
+  fn build_one_hot_table(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    num_blocks: usize,
+  ) -> Self::OneHotTable {
+    OneHotPrecompTable::new(&ck.ck, block_size, num_blocks)
+  }
+
+  fn batch_commit_one_hot_with_table(
+    ck: &Self::CommitmentKey,
+    table: &Self::OneHotTable,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment> {
+    assert_eq!(all_offsets.len(), r.len());
+    let comms = batch_add_precomp_block(table, all_offsets);
     comms
       .into_iter()
       .zip(r.iter())

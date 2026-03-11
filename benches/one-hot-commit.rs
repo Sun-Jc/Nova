@@ -1,12 +1,15 @@
 //! Benchmark: one-hot batch commitment.
 //!
 //! Block size K=16, varying scales (2^16, 2^18, 2^20 blocks).
-//! Compares commit-major (batch_add_one_hot) vs block-major (batch_add_one_hot_block)
+//! Compares commit-major, block-major, and precomp+block-major
 //! at batch sizes 1, 16, 64, 256.
 use core::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nova_snark::{
-  provider::{msm::batch_add_one_hot_block, Bn256EngineKZG},
+  provider::{
+    msm::{batch_add_one_hot_block, batch_add_precomp_block, OneHotPrecompTable},
+    Bn256EngineKZG,
+  },
   traits::{commitment::CommitmentEngineTrait, Engine},
 };
 use rand::Rng;
@@ -37,6 +40,9 @@ fn bench_one_hot(c: &mut Criterion) {
 
     let ck = <E as Engine>::CE::setup(b"bench_one_hot", total_size).unwrap();
 
+    // Build precomp table (outside bench loop)
+    let table = OneHotPrecompTable::new(ck.ck(), k, num_blocks);
+
     let mut group = c.benchmark_group(format!("one_hot_K{k}_2^{log_blocks}"));
 
     for batch_size in [1, 16, 64, 256] {
@@ -45,8 +51,8 @@ fn bench_one_hot(c: &mut Criterion) {
         .collect();
       let all_r = vec![zero; batch_size];
 
-      // Commit-major (current baseline)
-      group.bench_function(&format!("commit_major_x{batch_size}"), |b| {
+      // Commit-major (baseline)
+      group.bench_function(format!("commit_major_x{batch_size}"), |b| {
         b.iter(|| {
           black_box(<E as Engine>::CE::batch_commit_one_hot(
             &ck,
@@ -57,10 +63,17 @@ fn bench_one_hot(c: &mut Criterion) {
         });
       });
 
-      // Block-major (new optimization)
-      group.bench_function(&format!("block_major_x{batch_size}"), |b| {
+      // Block-major
+      group.bench_function(format!("block_major_x{batch_size}"), |b| {
         b.iter(|| {
           black_box(batch_add_one_hot_block(ck.ck(), k, &all_offsets))
+        });
+      });
+
+      // Precomp + block-major
+      group.bench_function(format!("precomp_block_x{batch_size}"), |b| {
+        b.iter(|| {
+          black_box(batch_add_precomp_block(&table, &all_offsets))
         });
       });
     }

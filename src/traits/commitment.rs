@@ -59,6 +59,13 @@ pub trait CommitmentEngineTrait<E: Engine>: Clone + Send + Sync {
   /// Holds the type of the commitment
   type Commitment: CommitmentTrait<E>;
 
+  /// Holds the type of the precomputed one-hot table.
+  ///
+  /// The table precomputes pairwise sums of generators for consecutive block pairs,
+  /// enabling `batch_commit_one_hot_with_table` to halve point additions.
+  /// Supports serialization for persistence and reuse across sessions.
+  type OneHotTable: Clone + Send + Sync + Serialize + for<'de> Deserialize<'de>;
+
   /// Load keys
   #[cfg(feature = "io")]
   fn load_setup(
@@ -136,6 +143,27 @@ pub trait CommitmentEngineTrait<E: Engine>: Clone + Send + Sync {
       })
       .collect()
   }
+
+  /// Builds a precomputed one-hot table for the given commitment key.
+  ///
+  /// For each consecutive pair of blocks, precomputes K² pairwise sums of generators.
+  /// One-time cost; the returned table can be serialized and reused across sessions.
+  fn build_one_hot_table(
+    ck: &Self::CommitmentKey,
+    block_size: usize,
+    num_blocks: usize,
+  ) -> Self::OneHotTable;
+
+  /// Batch commits using a precomputed one-hot table with block-major iteration.
+  ///
+  /// Each pair of blocks requires a single table lookup instead of 2 point additions,
+  /// halving the number of additions compared to `batch_commit_one_hot`.
+  fn batch_commit_one_hot_with_table(
+    ck: &Self::CommitmentKey,
+    table: &Self::OneHotTable,
+    all_offsets: &[Vec<usize>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment>;
 
   /// Commits to the provided vector of "small" scalars (at most 64 bits) using the provided generators and random blind
   fn commit_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
