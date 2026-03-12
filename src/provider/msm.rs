@@ -14,12 +14,16 @@
 //!    mixed addition (7M + 2S) compared to standard Jacobian (~11M + 5S for proj+affine).
 //!
 //! The MSM implementations (for integer types and field types) are adapted from halo2/jolt.
+#[cfg(feature = "io")]
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use ff::{Field, PrimeField};
 use halo2curves::{group::Group, CurveAffine};
 use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 use rayon::{current_num_threads, prelude::*};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "io")]
+use std::io::{Read, Write};
 
 // ==================================================================================
 // XYZZ (Extended Jacobian) Bucket coordinates
@@ -858,6 +862,100 @@ impl<C: CurveAffine> OneHotPrecompTable<C> {
       leftover_bases,
     }
   }
+
+  /// Magic header for the precompute table file format.
+  #[cfg(feature = "io")]
+  const FILE_HEAD: &'static [u8; 12] = b"ONEHOT_TABLE";
+
+  /// Save the precompute table to a writer using raw binary representation.
+  ///
+  /// File layout (little-endian):
+  /// ```text
+  /// [12 bytes]  magic "ONEHOT_TABLE"
+  /// [8  bytes]  block_size   (u64)
+  /// [8  bytes]  num_blocks   (u64)
+  /// [8  bytes]  num_pairs    (u64, = tables.len())
+  /// [8  bytes]  has_leftover (u64, 0 or 1)
+  /// [variable]  flat table points via write_raw  (num_pairs × K² points)
+  /// [variable]  leftover bases via write_raw     (K points, if has_leftover)
+  /// ```
+  #[cfg(feature = "io")]
+  pub fn save(&self, mut writer: &mut impl Write) -> Result<(), crate::provider::ptau::PtauFileError>
+  where
+    C: halo2curves::serde::SerdeObject,
+  {
+    writer.write_all(Self::FILE_HEAD)?;
+    writer.write_u64::<LittleEndian>(self.block_size as u64)?;
+    writer.write_u64::<LittleEndian>(self.num_blocks as u64)?;
+    writer.write_u64::<LittleEndian>(self.tables.len() as u64)?;
+    writer.write_u64::<LittleEndian>(self.leftover_bases.is_some() as u64)?;
+
+    // Write all table points flat
+    for table in &self.tables {
+      for point in table {
+        point.write_raw(&mut writer)?;
+      }
+    }
+
+    // Write leftover bases if present
+    if let Some(ref bases) = self.leftover_bases {
+      for point in bases {
+        point.write_raw(&mut writer)?;
+      }
+    }
+
+    Ok(())
+  }
+
+  /// Load a precompute table from a reader using raw binary representation.
+  #[cfg(feature = "io")]
+  pub fn load(mut reader: &mut impl Read) -> Result<Self, crate::provider::ptau::PtauFileError>
+  where
+    C: halo2curves::serde::SerdeObject,
+  {
+    // Read and verify header
+    let mut head = [0u8; 12];
+    reader.read_exact(&mut head)?;
+    if &head != Self::FILE_HEAD {
+      return Err(crate::provider::ptau::PtauFileError::InvalidHead);
+    }
+
+    let block_size = reader.read_u64::<LittleEndian>()? as usize;
+    let num_blocks = reader.read_u64::<LittleEndian>()? as usize;
+    let num_pairs = reader.read_u64::<LittleEndian>()? as usize;
+    let has_leftover = reader.read_u64::<LittleEndian>()? != 0;
+
+    let k = block_size;
+    let table_len = k * k;
+
+    // Read table points
+    let mut tables = Vec::with_capacity(num_pairs);
+    for _ in 0..num_pairs {
+      let mut table = Vec::with_capacity(table_len);
+      for _ in 0..table_len {
+        table.push(C::read_raw(&mut reader)?);
+      }
+      tables.push(table);
+    }
+
+    // Read leftover bases if present
+    let leftover_bases = if has_leftover {
+      let mut bases = Vec::with_capacity(k);
+      for _ in 0..k {
+        bases.push(C::read_raw(&mut reader)?);
+      }
+      Some(bases)
+    } else {
+      None
+    };
+
+    Ok(Self {
+      tables,
+      block_size,
+      num_blocks,
+      leftover_bases,
+    })
+  }
 }
 
 /// Batch addition for one-hot vectors using precomputed pair tables + block-major iteration.
@@ -1155,5 +1253,55 @@ mod tests {
   fn test_precomp_table_serde() {
     test_precomp_table_serde_with::<bn256::Scalar, bn256::Affine>();
     test_precomp_table_serde_with::<pallas::Scalar, pallas::Affine>();
+  }
+
+  #[cfg(feature = "io")]
+  fn test_precomp_table_save_load_with<F: PrimeField, A>(num_blocks: usize)
+  where
+    A: CurveAffine<ScalarExt = F>
+      + Serialize
+      + for<'de> Deserialize<'de>
+      + halo2curves::serde::SerdeObject,
+  {
+    let block_size = 4;
+    let total = num_blocks * block_size;
+
+    let bases: Vec<A> = (0..total)
+      .map(|_| A::from(A::generator() * F::random(OsRng)))
+      .collect();
+
+    let table = OneHotPrecompTable::new(&bases, block_size, num_blocks);
+
+    // Round-trip through raw binary save/load
+    let mut buf = Vec::new();
+    table.save(&mut buf).unwrap();
+    let loaded = OneHotPrecompTable::<A>::load(&mut &buf[..]).unwrap();
+
+    // Verify functional equivalence via batch computation
+    let offsets: Vec<Vec<usize>> = (0..4)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+
+    let results_orig = batch_add_precomp_block(&table, &offsets);
+    let results_loaded = batch_add_precomp_block(&loaded, &offsets);
+
+    for (a, b) in results_orig.iter().zip(results_loaded.iter()) {
+      assert_eq!(*a, *b);
+    }
+  }
+
+  #[cfg(feature = "io")]
+  #[test]
+  fn test_precomp_table_save_load() {
+    // Even num_blocks (no leftover)
+    test_precomp_table_save_load_with::<bn256::Scalar, bn256::Affine>(8);
+    test_precomp_table_save_load_with::<pallas::Scalar, pallas::Affine>(8);
+    // Odd num_blocks (with leftover bases)
+    test_precomp_table_save_load_with::<bn256::Scalar, bn256::Affine>(7);
+    test_precomp_table_save_load_with::<pallas::Scalar, pallas::Affine>(7);
   }
 }

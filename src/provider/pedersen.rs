@@ -484,6 +484,21 @@ where
       })
       .collect()
   }
+
+  #[cfg(feature = "io")]
+  fn load_one_hot_table(
+    reader: &mut impl std::io::Read,
+  ) -> Result<Self::OneHotTable, PtauFileError> {
+    OneHotPrecompTable::load(reader)
+  }
+
+  #[cfg(feature = "io")]
+  fn save_one_hot_table(
+    table: &Self::OneHotTable,
+    writer: &mut impl std::io::Write,
+  ) -> Result<(), PtauFileError> {
+    table.save(writer)
+  }
 }
 
 /// A trait listing properties of a commitment key that can be managed in a divide-and-conquer fashion
@@ -614,5 +629,66 @@ mod tests {
     assert_eq!(keys_read.ck.len(), keys.ck.len());
     assert_eq!(keys_read.h, keys.h);
     assert_eq!(keys_read.ck, keys.ck);
+  }
+
+  #[test]
+  fn test_one_hot_table_save_load() {
+    use crate::traits::commitment::CommitmentEngineTrait;
+
+    const LABEL: &[u8; 4] = b"test";
+    let block_size = 4;
+
+    // Test even num_blocks (no leftover)
+    let num_blocks = 8;
+    let n = block_size * num_blocks;
+    let keys = CommitmentEngine::<E>::setup(LABEL, n).unwrap();
+    let table = CommitmentEngine::<E>::build_one_hot_table(&keys, block_size, num_blocks);
+
+    let mut buf = Vec::new();
+    CommitmentEngine::<E>::save_one_hot_table(&table, &mut buf).unwrap();
+    let loaded =
+      CommitmentEngine::<E>::load_one_hot_table(&mut &buf[..]).unwrap();
+
+    // Verify via computation
+    let offsets: Vec<Vec<usize>> = (0..4)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+    let r: Vec<_> = (0..4)
+      .map(|_| <E as Engine>::Scalar::random(rand_core::OsRng))
+      .collect();
+    let orig = CommitmentEngine::<E>::batch_commit_one_hot_with_table(&keys, &table, &offsets, &r);
+    let from_loaded =
+      CommitmentEngine::<E>::batch_commit_one_hot_with_table(&keys, &loaded, &offsets, &r);
+    assert_eq!(orig, from_loaded);
+
+    // Test odd num_blocks (with leftover)
+    let num_blocks = 7;
+    let n = block_size * num_blocks;
+    let keys = CommitmentEngine::<E>::setup(LABEL, n).unwrap();
+    let table = CommitmentEngine::<E>::build_one_hot_table(&keys, block_size, num_blocks);
+
+    let mut buf = Vec::new();
+    CommitmentEngine::<E>::save_one_hot_table(&table, &mut buf).unwrap();
+    let loaded =
+      CommitmentEngine::<E>::load_one_hot_table(&mut &buf[..]).unwrap();
+
+    let offsets: Vec<Vec<usize>> = (0..4)
+      .map(|_| {
+        (0..num_blocks)
+          .map(|_| rand::random::<usize>() % block_size)
+          .collect()
+      })
+      .collect();
+    let r: Vec<_> = (0..4)
+      .map(|_| <E as Engine>::Scalar::random(rand_core::OsRng))
+      .collect();
+    let orig = CommitmentEngine::<E>::batch_commit_one_hot_with_table(&keys, &table, &offsets, &r);
+    let from_loaded =
+      CommitmentEngine::<E>::batch_commit_one_hot_with_table(&keys, &loaded, &offsets, &r);
+    assert_eq!(orig, from_loaded);
   }
 }

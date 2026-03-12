@@ -81,6 +81,23 @@ pub trait CommitmentEngineTrait<E: Engine>: Clone + Send + Sync {
     writer: &mut (impl std::io::Write + std::io::Seek),
   ) -> Result<(), PtauFileError>;
 
+  /// Loads a precomputed one-hot table from the provided reader.
+  ///
+  /// Uses raw binary representation for fast I/O (no serde overhead).
+  #[cfg(feature = "io")]
+  fn load_one_hot_table(
+    reader: &mut impl std::io::Read,
+  ) -> Result<Self::OneHotTable, PtauFileError>;
+
+  /// Saves a precomputed one-hot table to the provided writer.
+  ///
+  /// Uses raw binary representation for fast I/O (no serde overhead).
+  #[cfg(feature = "io")]
+  fn save_one_hot_table(
+    table: &Self::OneHotTable,
+    writer: &mut impl std::io::Write,
+  ) -> Result<(), PtauFileError>;
+
   /// Samples a new commitment key of a specified size.
   ///
   /// # Errors
