@@ -775,6 +775,21 @@ where
       })
       .collect()
   }
+
+  #[cfg(feature = "io")]
+  fn load_one_hot_table(
+    reader: &mut impl std::io::Read,
+  ) -> Result<Self::OneHotTable, PtauFileError> {
+    OneHotPrecompTable::load(reader)
+  }
+
+  #[cfg(feature = "io")]
+  fn save_one_hot_table(
+    table: &Self::OneHotTable,
+    writer: &mut impl std::io::Write,
+  ) -> Result<(), PtauFileError> {
+    table.save(writer)
+  }
 }
 
 /// Provides an implementation of generators for proving evaluations
