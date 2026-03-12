@@ -407,11 +407,12 @@ where
     Commitment { comm }
   }
 
-  /// Batch commits using GPU-accelerated MSM when available (BN254 on Apple Silicon).
+  /// Batch commits using GPU-accelerated MSM when available.
   ///
-  /// Delegates to `E::GE::batch_vartime_multiscalar_mul`, which for BN254 on
-  /// aarch64 uses halo2curves Metal GPU batch MSM with shared-bases optimization.
-  /// For other curves or platforms, the default sequential fallback applies.
+  /// Delegates to `E::GE::batch_vartime_multiscalar_mul`, which for BN254
+  /// with the `gpu` feature uses halo2curves Metal GPU batch MSM when
+  /// task size >= 2^18. Shared bases optimization: copies bases once and
+  /// reuses Metal buffer pool + booth cache across all tasks.
   fn batch_commit(
     ck: &Self::CommitmentKey,
     v: &[Vec<E::Scalar>],

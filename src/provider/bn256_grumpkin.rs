@@ -41,7 +41,7 @@ crate::impl_traits_no_dlog_ext!(
 );
 
 impl DlogGroupExt for bn256::Point {
-  #[cfg(not(feature = "blitzar"))]
+  #[cfg(not(any(feature = "blitzar", feature = "gpu")))]
   fn vartime_multiscalar_mul(scalars: &[Self::Scalar], bases: &[Self::AffineGroupElement]) -> Self {
     msm(scalars, bases)
   }
@@ -76,20 +76,42 @@ impl DlogGroupExt for bn256::Point {
     super::blitzar::batch_vartime_multiscalar_mul(scalars, bases)
   }
 
-  /// On Apple Silicon (aarch64), use halo2curves Metal GPU batch MSM.
+  /// Use halo2curves Metal GPU for single MSM when n >= 2^18 (GPU feature).
+  /// Below 2^18, GPU launch overhead exceeds the compute savings.
+  #[cfg(all(feature = "gpu", not(feature = "blitzar")))]
+  fn vartime_multiscalar_mul(scalars: &[Self::Scalar], bases: &[Self::AffineGroupElement]) -> Self {
+    use halo2curves::gpu::msm_gpu;
+    if scalars.len() >= (1 << 18) {
+      msm_gpu(scalars, bases)
+    } else {
+      msm(scalars, bases)
+    }
+  }
+
+  /// Use halo2curves Metal GPU batch MSM when max task size >= 2^18 (GPU feature).
   /// All scalars share the same bases, so the GPU kernel copies bases once
-  /// and reuses buffer pool + booth cache across all tasks.
-  #[cfg(all(not(feature = "blitzar"), target_arch = "aarch64"))]
+  /// and reuses Metal buffer pool + booth cache across all tasks.
+  /// Tasks smaller than 2^18 fall back to CPU MSM.
+  #[cfg(all(feature = "gpu", not(feature = "blitzar")))]
   fn batch_vartime_multiscalar_mul(
     scalars: &[Vec<Self::Scalar>],
     bases: &[Self::AffineGroupElement],
   ) -> Vec<Self> {
-    use halo2curves::gpu::batch_msm_gpu;
+    let max_len = scalars.iter().map(|s| s.len()).max().unwrap_or(0);
 
-    let coeffs_refs: Vec<&[Self::Scalar]> = scalars.iter().map(|s| s.as_slice()).collect();
-    let bases_refs: Vec<&[Self::AffineGroupElement]> =
-      vec![&bases[..scalars.iter().map(|s| s.len()).max().unwrap_or(0)]; scalars.len()];
-    batch_msm_gpu(&coeffs_refs, &bases_refs)
+    if max_len >= (1 << 18) {
+      use halo2curves::gpu::batch_msm_gpu;
+      let coeffs_refs: Vec<&[Self::Scalar]> = scalars.iter().map(|s| s.as_slice()).collect();
+      let bases_refs: Vec<&[Self::AffineGroupElement]> =
+        vec![&bases[..max_len]; scalars.len()];
+      batch_msm_gpu(&coeffs_refs, &bases_refs)
+    } else {
+      // Small tasks: CPU MSM via rayon
+      scalars
+        .par_iter()
+        .map(|scalar| Self::vartime_multiscalar_mul(scalar, &bases[..scalar.len()]))
+        .collect::<Vec<_>>()
+    }
   }
 }
 

@@ -37,12 +37,8 @@ itertools = "0.14.0"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 halo2curves = { path = "../halo2curves", features = ["std", "bits", "derive_serde", "asm"] }
 
-[target.'cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64")))'.dependencies]
+[target.'cfg(not(target_arch = "x86_64"))'.dependencies]
 halo2curves = { path = "../halo2curves", features = ["std", "bits", "derive_serde"] }
-
-# On Apple Silicon: enable GPU (Metal) backend
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-halo2curves = { path = "../halo2curves", features = ["std", "bits", "derive_serde", "gpu"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2.15", default-features = false, features = ["js"] }
@@ -102,5 +98,6 @@ flamegraph = ["pprof2/flamegraph", "pprof2/criterion"]
 experimental = []
 evm = []
 io = []
+gpu = ["halo2curves/gpu"]
 # Enables insecure setup methods that generate random tau. Only for testing!
 test-utils = []
