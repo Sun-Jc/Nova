@@ -75,6 +75,22 @@ impl DlogGroupExt for bn256::Point {
   ) -> Vec<Self> {
     super::blitzar::batch_vartime_multiscalar_mul(scalars, bases)
   }
+
+  /// On Apple Silicon (aarch64), use halo2curves Metal GPU batch MSM.
+  /// All scalars share the same bases, so the GPU kernel copies bases once
+  /// and reuses buffer pool + booth cache across all tasks.
+  #[cfg(all(not(feature = "blitzar"), target_arch = "aarch64"))]
+  fn batch_vartime_multiscalar_mul(
+    scalars: &[Vec<Self::Scalar>],
+    bases: &[Self::AffineGroupElement],
+  ) -> Vec<Self> {
+    use halo2curves::gpu::batch_msm_gpu;
+
+    let coeffs_refs: Vec<&[Self::Scalar]> = scalars.iter().map(|s| s.as_slice()).collect();
+    let bases_refs: Vec<&[Self::AffineGroupElement]> =
+      vec![&bases[..scalars.iter().map(|s| s.len()).max().unwrap_or(0)]; scalars.len()];
+    batch_msm_gpu(&coeffs_refs, &bases_refs)
+  }
 }
 
 impl_traits!(

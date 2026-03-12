@@ -407,6 +407,33 @@ where
     Commitment { comm }
   }
 
+  /// Batch commits using GPU-accelerated MSM when available (BN254 on Apple Silicon).
+  ///
+  /// Delegates to `E::GE::batch_vartime_multiscalar_mul`, which for BN254 on
+  /// aarch64 uses halo2curves Metal GPU batch MSM with shared-bases optimization.
+  /// For other curves or platforms, the default sequential fallback applies.
+  fn batch_commit(
+    ck: &Self::CommitmentKey,
+    v: &[Vec<E::Scalar>],
+    r: &[E::Scalar],
+  ) -> Vec<Self::Commitment> {
+    assert_eq!(v.len(), r.len());
+
+    let msm_results = E::GE::batch_vartime_multiscalar_mul(v, &ck.ck);
+
+    msm_results
+      .into_iter()
+      .zip(r.iter())
+      .map(|(msm_result, r_i)| {
+        let mut comm = msm_result;
+        if r_i != &E::Scalar::ZERO {
+          comm += <E::GE as DlogGroup>::group(&ck.h) * *r_i;
+        }
+        Commitment { comm }
+      })
+      .collect()
+  }
+
   fn batch_commit_one_hot(
     ck: &Self::CommitmentKey,
     block_size: usize,
