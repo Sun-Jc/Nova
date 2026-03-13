@@ -99,11 +99,10 @@ impl DlogGroupExt for bn256::Point {
   ) -> Vec<Self> {
     let max_len = scalars.iter().map(|s| s.len()).max().unwrap_or(0);
 
-    if max_len >= (1 << 18) {
+    if max_len >= (1 << 16) {
       use halo2curves::gpu::batch_msm_gpu;
       let coeffs_refs: Vec<&[Self::Scalar]> = scalars.iter().map(|s| s.as_slice()).collect();
-      let bases_refs: Vec<&[Self::AffineGroupElement]> =
-        vec![&bases[..max_len]; scalars.len()];
+      let bases_refs: Vec<&[Self::AffineGroupElement]> = vec![&bases[..max_len]; scalars.len()];
       batch_msm_gpu(&coeffs_refs, &bases_refs)
     } else {
       // Small tasks: CPU MSM via rayon
