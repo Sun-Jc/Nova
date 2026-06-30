@@ -6,6 +6,8 @@
 //!
 //! In polynomial.rs we also provide foundational types and functions for manipulating multilinear polynomials.
 pub mod direct;
+/// Logup-GKR fractional-sum memory-check (replaces ppSNARK inverse-logup).
+pub mod logup_gkr;
 pub mod ppsnark;
 pub mod snark;
 
