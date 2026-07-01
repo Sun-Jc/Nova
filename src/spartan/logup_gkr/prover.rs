@@ -7,7 +7,7 @@
 //! every leaf/root/claim into the transcript (the soundness red line).
 
 use crate::errors::NovaError;
-use crate::spartan::logup_gkr::layer::InputLayer;
+use crate::spartan::logup_gkr::layer::Layer;
 use crate::spartan::logup_gkr::proof::{LogupGkrOpeningClaim, LogupGkrProof};
 use crate::traits::Engine;
 
@@ -18,7 +18,7 @@ use crate::traits::Engine;
 /// # Stage 1
 /// Not yet implemented — frozen signature with a placeholder body.
 pub fn prove<E: Engine>(
-  _trees: Vec<InputLayer<E>>,
+  _inputs: Vec<Layer<E>>,
   _transcript: &mut E::TE,
 ) -> Result<(LogupGkrProof<E>, LogupGkrOpeningClaim<E>), NovaError> {
   unimplemented!("logup_gkr::prover::prove is a stage-1 placeholder")
