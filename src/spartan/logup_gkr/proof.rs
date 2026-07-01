@@ -33,7 +33,7 @@ pub type LayerClaim<E> = Fraction<<E as Engine>::Scalar>;
 /// and `right` child fractions `(nL,dL)` and `(nR,dR)`.
 ///
 /// Mirrors hp `LayerFinalClaim{left, right}` (`proof/claim.rs:96`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct LayerFinalClaim<E: Engine> {
   /// Left child `(nL, dL)`.
@@ -44,6 +44,13 @@ pub struct LayerFinalClaim<E: Engine> {
 
 impl<E: Engine> LayerFinalClaim<E> {
   /// Builds from the four folded sumcheck evaluations `nL, nR, dL, dR`.
+  ///
+  /// WARNING: the layer sumcheck's `bound_evals` come out **interleaved** as
+  /// `[nL, dR, nR, dL]` (hp `prover/mod.rs:143-153`, matching the flattened
+  /// virtual-polynomial order `numerator_left, denominator_right,
+  /// numerator_right, denominator_left`). Map them explicitly —
+  /// `new(evals[0], evals[2], evals[3], evals[1])` — never slice `evals[0..4]`
+  /// into the parameters positionally.
   pub fn new(nL: E::Scalar, nR: E::Scalar, dL: E::Scalar, dR: E::Scalar) -> Self {
     Self {
       left: Fraction::new(nL, dL),

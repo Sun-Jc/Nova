@@ -11,9 +11,10 @@ use crate::spartan::logup_gkr::layer::Layer;
 use crate::spartan::logup_gkr::proof::{LogupGkrOpeningClaim, LogupGkrProof};
 use crate::traits::Engine;
 
-/// Proves the fractional-sum identity `Σ p/q = 0` for each tree (row, col),
-/// returning the proof and the shared opening claim to be batched with the
-/// inner sumcheck.
+/// Proves the fractional-sum identity `Σ p/q = 0` for all logup instances in a
+/// single batched tree (`_inputs` holds one input `Layer` per instance, e.g.
+/// `[row, col]`), returning the proof and the shared opening claim to be batched
+/// with the inner sumcheck.
 ///
 /// # Stage 1
 /// Not yet implemented — frozen signature with a placeholder body.

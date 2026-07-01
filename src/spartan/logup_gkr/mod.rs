@@ -9,7 +9,7 @@
 //!
 //! ## Module map
 //! - [`fraction`]: projective fraction + 2-to-1 gate (pure).
-//! - [`layer`]: input-layer types (leaves of each tree).
+//! - [`layer`]: the `Layer` type (one tree level: num/den MLEs).
 //! - [`proof`]: frozen proof/claim interface.
 //! - [`prover`]: stage-1 placeholder; reuses `prove_batched_cubic` later.
 //! - [`verifier`]: fold-down + root check, emits the shared opening claim.
