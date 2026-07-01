@@ -8,7 +8,7 @@
 //! Mirrors the **primary** reference hyperplonk-logup-gkr
 //! (`fractional_gkr/layer/batch.rs`, `proof/{mod,claim}.rs`): the logup
 //! instances (`row`, `col`) are padded to a uniform height and folded through a
-//! **single** `BatchTree` with **one shared GKR depth**, so the out-of-domain
+//! **single** `BatchTree` with **one shared GKR depth**, so the evaluation
 //! point is shared *by construction*. There is no per-tree proof and no "assert
 //! the two points are equal" — an earlier design mistake (audit D1). Per layer,
 //! the instances' column pairs are batched into one sumcheck via a fresh `λ`.
@@ -102,32 +102,32 @@ pub struct LogupGkrProof<E: Engine> {
   pub sumchecks: Vec<LayerSumcheck<E>>,
 }
 
-/// Verifier output — a **continuation token**, mirroring hp
-/// `LogupGKROpeningClaim{ood_point, openings}` (`proof/mod.rs:35`).
+/// Verifier output — a **continuation token**, mirroring hp's opening claim
+/// (`proof/mod.rs:35`), with its point field renamed to Nova's `eval_point`.
 ///
-/// The host reads only [`Self::ood_point`] to build its merged PCS opening set;
+/// The host reads only [`Self::eval_point`] to build its merged PCS opening set;
 /// `openings` (the per-instance input-layer fractions the GKR reduced to, order
 /// `[row, col]`) is handed to the host's reconcile step, which is where the
 /// `0/den` zero-sum check lives — **not** inside the GKR verifier. See the host
 /// contract in [`crate::spartan::logup_gkr`] and `rerandomize-batch-explained.md`.
 #[derive(Clone, Debug)]
 pub struct LogupGkrOpeningClaim<E: Engine> {
-  ood_point: Vec<E::Scalar>,
+  eval_point: Vec<E::Scalar>,
   openings: Vec<Fraction<E::Scalar>>,
 }
 
 impl<E: Engine> LogupGkrOpeningClaim<E> {
   /// Constructs the token (only the GKR verifier should call this).
-  pub fn new(ood_point: Vec<E::Scalar>, openings: Vec<Fraction<E::Scalar>>) -> Self {
+  pub fn new(eval_point: Vec<E::Scalar>, openings: Vec<Fraction<E::Scalar>>) -> Self {
     Self {
-      ood_point,
+      eval_point,
       openings,
     }
   }
 
-  /// The single shared out-of-domain point the host opens its columns at.
-  pub fn ood_point(&self) -> &[E::Scalar] {
-    &self.ood_point
+  /// The single shared evaluation point the host opens its columns at.
+  pub fn eval_point(&self) -> &[E::Scalar] {
+    &self.eval_point
   }
 
   /// The reduced per-instance input-layer fractions (`[row, col]`), which the

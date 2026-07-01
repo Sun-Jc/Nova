@@ -16,10 +16,10 @@
 //!
 //! ## Boundary with ppSNARK (host reconcile contract)
 //! The argument owns no commitment scheme. Its verifier returns a
-//! [`proof::LogupGkrOpeningClaim`]: a single shared `ood_point` plus the
+//! [`proof::LogupGkrOpeningClaim`]: a single shared `eval_point` plus the
 //! per-instance input-layer fractions `openings` (order `[row, col]`). The
 //! **host** then:
-//! 1. rerandomizes `L_row`/`L_col` at `ood_point` into a sumcheck batched with
+//! 1. rerandomizes `L_row`/`L_col` at `eval_point` into a sumcheck batched with
 //!    the inner sumcheck, and opens them (with the other columns) via HyperKZG
 //!    at the shared point (see `rerandomize-batch-explained.md`);
 //! 2. recomputes each instance's fraction from its opened `L`/`addr`/`ts`

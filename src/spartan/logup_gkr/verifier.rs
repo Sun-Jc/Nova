@@ -1,13 +1,13 @@
 //! Verifier for the Logup-GKR fractional-sum argument.
 //!
 //! Replays the fold-down of the **single batched tree** (all instances share
-//! one GKR depth and one OOD point — audit D1) and reduces it to an eval
+//! one GKR depth and one evaluation point — audit D1) and reduces it to an eval
 //! request on the input layer ([`LogupGkrOpeningClaim`]). It opens no
 //! commitments and does **not** perform the `0/den` zero-sum check: per the
 //! primary reference (hp `fractional_gkr/verifier.rs`), that check belongs to
 //! the host's reconcile step. The GKR verifier only checks internal consistency
 //! (output claims vs `final_claims[0]` gates, and each layer's batched sumcheck
-//! against the merged gate claim) and returns the shared OOD point plus the
+//! against the merged gate claim) and returns the shared evaluation point plus the
 //! per-instance reduced fractions.
 
 use crate::errors::NovaError;
@@ -34,7 +34,7 @@ const LAYER_SC_DEGREE: usize = 3;
 /// sumcheck); later layers sample a fresh `λ`, verify the batched layer sumcheck
 /// against `claims.merged(λ)` and assert it equals `final_claims.compute_gates()
 /// .merged(λ)`; each step observes `final_claims`, samples fold `r`, folds every
-/// instance, and grows the single OOD point. The leftover claims are the
+/// instance, and grows the single evaluation point. The leftover claims are the
 /// per-instance input-layer fractions.
 pub fn verify<E: Engine>(
   proof: &LogupGkrProof<E>,
