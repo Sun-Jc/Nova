@@ -6,6 +6,8 @@
 //! root of why Logup-GKR avoids the inverse-polynomial commitments that the
 //! current ppSNARK memory-check pays for.
 
+use core::iter::Sum;
+use core::ops::Add;
 use ff::Field;
 use serde::{Deserialize, Serialize};
 
@@ -35,14 +37,27 @@ impl<F: Field> Fraction<F> {
       den: F::ONE,
     }
   }
+}
 
-  /// Projective fraction addition: `a/b + c/d = (a·d + c·b)/(b·d)`.
-  ///
-  /// This is the 2-to-1 gate applied at every internal node of the tree.
-  pub fn add(&self, other: &Self) -> Self {
+/// Projective fraction addition (the 2-to-1 gate): `a/b + c/d = (a·d + c·b)/(b·d)`.
+///
+/// Mirrors hp's `impl Add for Fraction`; `Fraction` is `Copy`, so `+` takes
+/// values with no cost.
+impl<F: Field> Add for Fraction<F> {
+  type Output = Self;
+
+  fn add(self, rhs: Self) -> Self {
     Self {
-      num: self.num * other.den + other.num * self.den,
-      den: self.den * other.den,
+      num: self.num * rhs.den + rhs.num * self.den,
+      den: self.den * rhs.den,
     }
+  }
+}
+
+/// Sum of a sequence of fractions, folding from the identity `0/1`. Lets a whole
+/// tree level be reduced with `.sum()` (mirrors hp's `impl Sum for Fraction`).
+impl<F: Field> Sum for Fraction<F> {
+  fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+    iter.fold(Self::zero(), |a, b| a + b)
   }
 }

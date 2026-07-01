@@ -61,7 +61,7 @@ impl<E: Engine> LayerFinalClaim<E> {
 
   /// The gate output `left + right` (projective fraction add).
   pub fn compute_gate(&self) -> Fraction<E::Scalar> {
-    self.left.add(&self.right)
+    self.left + self.right
   }
 }
 
