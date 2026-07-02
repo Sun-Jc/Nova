@@ -19,6 +19,7 @@
 //! keeps the tree consistent with Nova's sumcheck round order (`eval_point`
 //! challenges bind MSB→LSB), so the GKR point matches the sumcheck point.
 
+use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial as MLE;
 use crate::traits::Engine;
@@ -77,10 +78,11 @@ impl<E: Engine> Layer<E> {
     let mut next_num = Vec::with_capacity(n);
     let mut next_den = Vec::with_capacity(n);
     for i in 0..n {
-      let (nl, nr) = (self.num.Z[i], self.num.Z[i + n]);
-      let (dl, dr) = (self.den.Z[i], self.den.Z[i + n]);
-      next_num.push(nl * dr + nr * dl);
-      next_den.push(dl * dr);
+      // Fraction-add the two MSB-halves (child cells i and i+n).
+      let child = Fraction::new(self.num.Z[i], self.den.Z[i])
+        + Fraction::new(self.num.Z[i + n], self.den.Z[i + n]);
+      next_num.push(child.num);
+      next_den.push(child.den);
     }
     Self {
       num: MLE::new(next_num),

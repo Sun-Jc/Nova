@@ -140,12 +140,13 @@ pub fn verify<E: Engine>(
 
       // The sumcheck contract: its final value must equal
       //   eq(τ, r) · Σ_i [nL·dR + nR·dL + λ·dL·dR]_i
+      // The gate is the fraction-add of the two children; the batched sumcheck
+      // value is its numerator plus λ·its denominator.
       let eq_at_r = EqPolynomial::new(point.clone()).evaluate(&r);
       let mut gate_sum = E::Scalar::ZERO;
       for fc in layer_finals {
-        let (nl, dl) = (fc.left.num, fc.left.den);
-        let (nr, dr) = (fc.right.num, fc.right.den);
-        gate_sum += nl * dr + nr * dl + lambda * (dl * dr);
+        let g = fc.compute_gate();
+        gate_sum += g.num + lambda * g.den;
       }
       if sc_eval != eq_at_r * gate_sum {
         return Err(NovaError::InvalidSumcheckProof);

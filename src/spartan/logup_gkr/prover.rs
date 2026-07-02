@@ -23,6 +23,7 @@
 //! fraction evaluation point of the next layer.
 
 use crate::errors::NovaError;
+use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::logup_gkr::layer::Layer;
 use crate::spartan::logup_gkr::proof::{
   LayerClaim, LayerFinalClaim, LayerSumcheck, LogupGkrOpeningClaim, LogupGkrProof,
@@ -116,7 +117,9 @@ fn prove_layer_sumcheck<E: Engine>(
           let nr = nr0 + t * (nr1 - nr0);
           let dl = dl0 + t * (dl1 - dl0);
           let dr = dr0 + t * (dr1 - dr0);
-          g[k] += nl * dr + nr * dl + lambda * (dl * dr);
+          // gate = fraction-add of the two children; batched value = num + λ·den.
+          let gate = Fraction::new(nl, dl) + Fraction::new(nr, dr);
+          g[k] += gate.num + lambda * gate.den;
         }
       }
       for k in 0..4 {
