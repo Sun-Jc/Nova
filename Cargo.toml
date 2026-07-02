@@ -77,6 +77,10 @@ name = "commit"
 harness = false
 
 [[bench]]
+name = "logup_gkr"
+harness = false
+
+[[bench]]
 name = "sumcheckeq"
 harness = false
 

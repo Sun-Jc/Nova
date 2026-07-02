@@ -19,11 +19,13 @@
 //! keeps the tree consistent with Nova's sumcheck round order (`eval_point`
 //! challenges bind MSB→LSB), so the GKR point matches the sumcheck point.
 
+use crate::constants::PARALLEL_THRESHOLD;
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial as MLE;
 use crate::traits::Engine;
 use ff::Field;
+use rayon::prelude::*;
 
 /// One level of a fractional-sum tree: parallel numerator and denominator
 /// multilinear polynomials over `{0,1}^{log len}`.
@@ -75,15 +77,21 @@ impl<E: Engine> Layer<E> {
     debug_assert_eq!(len, self.den.len());
     debug_assert!(len >= 2 && len.is_power_of_two());
     let n = len / 2;
-    let mut next_num = Vec::with_capacity(n);
-    let mut next_den = Vec::with_capacity(n);
-    for i in 0..n {
-      // Fraction-add the two MSB-halves (child cells i and i+n).
+
+    // Each output cell i is the fraction-add of the two MSB-halves (child cells
+    // i and i+n) — independent across i, so parallelize above the threshold.
+    let fold = |i: usize| -> (E::Scalar, E::Scalar) {
       let child = Fraction::new(self.num.Z[i], self.den.Z[i])
         + Fraction::new(self.num.Z[i + n], self.den.Z[i + n]);
-      next_num.push(child.num);
-      next_den.push(child.den);
-    }
+      (child.num, child.den)
+    };
+
+    let (next_num, next_den): (Vec<_>, Vec<_>) = if n < PARALLEL_THRESHOLD {
+      (0..n).map(fold).unzip()
+    } else {
+      (0..n).into_par_iter().map(fold).unzip()
+    };
+
     Self {
       num: MLE::new(next_num),
       den: MLE::new(next_den),
