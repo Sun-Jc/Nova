@@ -19,13 +19,21 @@
 //! keeps the tree consistent with Nova's sumcheck round order (`eval_point`
 //! challenges bind MSB→LSB), so the GKR point matches the sumcheck point.
 
-use crate::constants::PARALLEL_THRESHOLD;
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial as MLE;
 use crate::traits::Engine;
 use ff::Field;
 use rayon::prelude::*;
+
+/// Parallelize `fold_up` only above this many output cells. A fold cell is a
+/// few field multiplications — very cheap — so rayon's per-fold scheduling
+/// overhead (~1–3 ms) dominates until the layer is large. Measured crossover
+/// (BN254, `benches/logup_gkr.rs` `fold-crossover`): serial wins up to ~32768
+/// (tie), parallel wins from ~65536 (2.3×) growing with size. NOT the crate's
+/// `PARALLEL_THRESHOLD` (=4096), which is tuned for per-element curve ops (MSM),
+/// where each element is far more expensive than a fold cell.
+const FOLD_PARALLEL_THRESHOLD: usize = 1 << 16;
 
 /// One level of a fractional-sum tree: parallel numerator and denominator
 /// multilinear polynomials over `{0,1}^{log len}`.
@@ -86,7 +94,7 @@ impl<E: Engine> Layer<E> {
       (child.num, child.den)
     };
 
-    let (next_num, next_den): (Vec<_>, Vec<_>) = if n < PARALLEL_THRESHOLD {
+    let (next_num, next_den): (Vec<_>, Vec<_>) = if n < FOLD_PARALLEL_THRESHOLD {
       (0..n).map(fold).unzip()
     } else {
       (0..n).into_par_iter().map(fold).unzip()

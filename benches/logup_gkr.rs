@@ -3,7 +3,7 @@
 //!
 //! Run: `cargo bench --bench logup_gkr`.
 use core::time::Duration;
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use ff::Field;
 use nova_snark::{
   provider::Bn256EngineKZG,
@@ -17,9 +17,58 @@ use rayon::prelude::*;
 criterion_group! {
   name = logup_gkr;
   config = Criterion::default().warm_up_time(Duration::from_millis(1000)).sample_size(20);
-  targets = bench_build_tree
+  targets = bench_build_tree, bench_fold_crossover
 }
 criterion_main!(logup_gkr);
+
+// One fraction-add fold of a length-`2n` layer into length-`n`, serial.
+fn fold_serial<Fr: Field>(num: &[Fr], den: &[Fr], n: usize) -> (Vec<Fr>, Vec<Fr>) {
+  (0..n)
+    .map(|i| {
+      let d = den[i] * den[i + n];
+      let p = num[i] * den[i + n] + num[i + n] * den[i];
+      (p, d)
+    })
+    .unzip()
+}
+
+// Same fold, parallel.
+fn fold_parallel<Fr: Field>(num: &[Fr], den: &[Fr], n: usize) -> (Vec<Fr>, Vec<Fr>) {
+  (0..n)
+    .into_par_iter()
+    .map(|i| {
+      let d = den[i] * den[i + n];
+      let p = num[i] * den[i + n] + num[i + n] * den[i];
+      (p, d)
+    })
+    .unzip()
+}
+
+// Sweep a single fold across sizes bracketing PARALLEL_THRESHOLD (=4096),
+// serial vs parallel, so the empirical crossover = the optimal threshold.
+fn bench_fold_crossover(c: &mut Criterion) {
+  type Fr = <Bn256EngineKZG as Engine>::Scalar;
+  let mut group = c.benchmark_group("logup-gkr-fold-crossover");
+
+  for &n in &[8192usize, 32768, 65536, 131072, 262144, 524288] {
+    let len = 2 * n;
+    let (num, den): (Vec<Fr>, Vec<Fr>) = (0..len)
+      .into_par_iter()
+      .map(|i| {
+        let mut rng = StdRng::seed_from_u64(i as u64);
+        (Fr::random(&mut rng), Fr::random(&mut rng) + Fr::ONE)
+      })
+      .unzip();
+
+    group.bench_with_input(BenchmarkId::new("serial", n), &n, |b, &n| {
+      b.iter(|| fold_serial(black_box(&num), black_box(&den), n))
+    });
+    group.bench_with_input(BenchmarkId::new("parallel", n), &n, |b, &n| {
+      b.iter(|| fold_parallel(black_box(&num), black_box(&den), n))
+    });
+  }
+  group.finish();
+}
 
 fn bench_build_tree(c: &mut Criterion) {
   type E = Bn256EngineKZG;
