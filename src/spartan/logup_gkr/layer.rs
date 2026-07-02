@@ -23,7 +23,6 @@ use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial as MLE;
 use crate::traits::Engine;
-use ff::Field;
 use rayon::prelude::*;
 
 /// Parallelize `fold_up` only above this many output cells. A fold cell is a
@@ -131,14 +130,6 @@ impl<E: Engine> Layer<E> {
     debug_assert!(self.is_output());
     (self.num.Z[0], self.den.Z[0])
   }
-}
-
-/// Convenience: the identity/padding cell `(0, 1)` repeated to length `len`
-/// (a power of two), for padding an instance up to a uniform height.
-pub fn pad_cells<F: Field>(nums: &mut Vec<F>, dens: &mut Vec<F>, len: usize) {
-  debug_assert!(len.is_power_of_two());
-  nums.resize(len, F::ZERO);
-  dens.resize(len, F::ONE);
 }
 
 #[cfg(test)]
