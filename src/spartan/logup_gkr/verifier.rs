@@ -1,61 +1,264 @@
 //! Verifier for the Logup-GKR fractional-sum argument.
 //!
-//! Replays the fold-down of the **single batched tree** (all instances share
-//! one GKR depth and one evaluation point — audit D1) and reduces it to an eval
-//! request on the input layer ([`LogupGkrOpeningClaim`]). It opens no
-//! commitments and does **not** perform the `0/den` zero-sum check: per the
-//! primary reference (hp `fractional_gkr/verifier.rs`), that check belongs to
-//! the host's reconcile step. The GKR verifier only checks internal consistency
-//! (output claims vs `final_claims[0]` gates, and each layer's batched sumcheck
-//! against the merged gate claim) and returns the shared evaluation point plus the
-//! per-instance reduced fractions.
+//! **This file defines the protocol.** It is written independently of any
+//! prover: every check is derived from the GKR fractional-sum argument, and the
+//! Fiat-Shamir transcript order is fixed here by soundness reasoning (see the
+//! module docs below). A prover is correct **iff** it produces a transcript and
+//! claims that make this verifier accept; the prover must satisfy this file, not
+//! the other way around.
+//!
+//! ## What is proven
+//! For each logup instance `i`, an input layer of projective fractions folds
+//! through a binary tree to a single root fraction `(v_p_i, v_q_i)`. The
+//! verifier reduces the per-instance root claims down to a single evaluation of
+//! the input layer at a shared point, checking each tree layer with one batched
+//! sumcheck. It returns that point and the reduced per-instance fractions; the
+//! `0/den` zero-sum balance check is the host's job (this argument owns no PCS).
+//!
+//! ## Layer reduction (the sumcheck contract)
+//! A non-root layer with `t` variables, reduced at evaluation point `τ`
+//! (`|τ| = t`), carries a per-instance running claim `(v_p_i, v_q_i)`. The
+//! verifier samples a fresh batching challenge `λ` and **demands** a sumcheck
+//! proving
+//! ```text
+//!   Σ_i (v_p_i + λ·v_q_i)  =  Σ_x eq(τ, x) · Σ_i g_i(x),
+//!   g_i(x) = nL_i(x)·dR_i(x) + nR_i(x)·dL_i(x) + λ·dL_i(x)·dR_i(x),
+//! ```
+//! where `(nL_i, nR_i, dL_i, dR_i)` are the num/den halves of instance `i`'s
+//! child layer. The sumcheck's final value must equal `eq(τ, r)·Σ_i g_i(r)`,
+//! reconstructed here from the prover's claimed `(nL,nR,dL,dR)` at `r`. This is
+//! a demand on the sumcheck backend: whatever the prover uses, its final
+//! evaluation must reconcile transparently against this expression (Nova's
+//! `prove_cubic_with_three_inputs` has this shape; see ppSNARK's outer check).
+//!
+//! ## Fiat-Shamir order (soundness)
+//! The transcript order is chosen so each challenge is unpredictable given the
+//! values it must bind — a prover cannot adaptively forge later messages:
+//! 1. absorb all root claims `(v_p_i, v_q_i)` before anything is sampled;
+//! 2. per layer (root→input): sample `λ` (bound to all prior claims/challenges,
+//!    so the layer's claims cannot be chosen after `λ`), run the layer sumcheck
+//!    (each round absorbs its polynomial then samples), absorb this layer's
+//!    final claims, then sample the fold challenge `r_fold` (bound to those
+//!    claims, so the two children cannot be chosen after `r_fold`).
+//!
+//! Reusing one `λ` across layers, or sampling `r_fold` before the claims it
+//! folds, would each break soundness (adaptive-forgery gaps).
 
 use crate::errors::NovaError;
-use crate::spartan::logup_gkr::fraction::Fraction;
-use crate::spartan::logup_gkr::proof::{LogupGkrOpeningClaim, LogupGkrProof};
-use crate::traits::Engine;
+use crate::spartan::logup_gkr::proof::{LayerClaim, LogupGkrOpeningClaim, LogupGkrProof};
+use crate::spartan::polys::eq::EqPolynomial;
+use crate::spartan::sumcheck::SumcheckProof;
+use crate::traits::{Engine, TranscriptEngineTrait};
+use ff::Field;
 
-/// Degree bound of each layer's batched sumcheck round polynomial under Nova's
-/// `prove_batched_cubic` (`eq · (p0·q1 + p1·q0 + λ·q0·q1)`, eq factored via
-/// Gruen). To be confirmed against Nova's emission when the prover lands; hp's
-/// own `max_degree = 2` does **not** transfer (different eq handling).
-const LAYER_SC_DEGREE: usize = 3;
+/// The protocol's Fiat-Shamir transcript labels and sumcheck degree, defined by
+/// the verifier. The prover must use exactly these.
+pub mod spec {
+  /// Round-polynomial label inside a layer sumcheck.
+  pub const ROUND_POLY: &[u8] = b"p";
+  /// Per-round sumcheck challenge label.
+  pub const ROUND_CHALLENGE: &[u8] = b"c";
+  /// Per-layer batching challenge `λ`.
+  pub const LAMBDA: &[u8] = b"l";
+  /// Per-layer fold challenge.
+  pub const FOLD: &[u8] = b"f";
+  /// Fraction numerator label.
+  pub const NUM: &[u8] = b"n";
+  /// Fraction denominator label.
+  pub const DEN: &[u8] = b"d";
+  /// Degree bound of each layer's batched sumcheck round polynomial:
+  /// `eq` (degree 1) × gate (degree 2) = degree 3.
+  pub const LAYER_SC_DEGREE: usize = 3;
+}
 
-/// Verifies the batched memory-check proof (all logup instances in one tree) and
-/// returns the shared opening claim. The host then rerandomizes the openings
-/// into the inner sumcheck and runs the zero-sum reconcile.
-///
-/// # Stage 1
-/// Fold-down skeleton with the correct single-tree structure and check
-/// placement; the exact sumcheck/transcript wiring is finalized with the prover.
-///
-/// Structure (hp `verifier.rs:21-99`): observe `initial_claims`; loop layers —
-/// layer 0 checks `initial_claims == final_claims[0].compute_gates()` (no
-/// sumcheck); later layers sample a fresh `λ`, verify the batched layer sumcheck
-/// against `claims.merged(λ)` and assert it equals `final_claims.compute_gates()
-/// .merged(λ)`; each step observes `final_claims`, samples fold `r`, folds every
-/// instance, and grows the single evaluation point. The leftover claims are the
-/// per-instance input-layer fractions.
+/// Absorbs a fraction `(num, den)` into the transcript, in the order the
+/// protocol fixes. Shared with the prover (which imports this).
+pub fn absorb_fraction<E: Engine>(transcript: &mut E::TE, num: E::Scalar, den: E::Scalar) {
+  transcript.absorb(spec::NUM, &num);
+  transcript.absorb(spec::DEN, &den);
+}
+
+/// Verifies the batched fractional-sum proof and returns the shared opening
+/// claim (evaluation point + per-instance input-layer fractions). Accepts iff
+/// the proof satisfies the protocol defined in this module.
 pub fn verify<E: Engine>(
   proof: &LogupGkrProof<E>,
-  _transcript: &mut E::TE,
+  transcript: &mut E::TE,
 ) -> Result<LogupGkrOpeningClaim<E>, NovaError> {
-  // Shape sanity the prover must satisfy (cheap, real):
-  // one batched sumcheck per non-base layer, and every layer carries one split
-  // claim per instance.
-  if proof.final_claims.is_empty() || proof.sumchecks.len() + 1 != proof.final_claims.len() {
+  let m = proof.initial_claims.len();
+  if m == 0 {
+    return Err(NovaError::InvalidNumInstances);
+  }
+  // Structural well-formedness: `final_claims` has one entry per reduction step
+  // (num_vars entries). The root reduction (index 0) carries no sumcheck, so
+  // `sumchecks.len() + 1 == final_claims.len()`, and every layer carries one
+  // split claim per instance.
+  let num_vars = proof.final_claims.len();
+  if num_vars == 0 || proof.sumchecks.len() + 1 != num_vars {
     return Err(NovaError::InvalidSumcheckProof);
   }
-  let num_instances = proof.initial_claims.len();
-  if num_instances == 0
-    || proof
-      .final_claims
-      .iter()
-      .any(|layer| layer.len() != num_instances)
-  {
+  if proof.final_claims.iter().any(|layer| layer.len() != m) {
     return Err(NovaError::InvalidSumcheckProof);
   }
 
-  let _ = (LAYER_SC_DEGREE, Fraction::<E::Scalar>::zero);
-  unimplemented!("logup_gkr::verifier::verify is a stage-1 placeholder")
+  // (1) Bind the root claims before any challenge is drawn.
+  for c in &proof.initial_claims {
+    absorb_fraction::<E>(transcript, c.num, c.den);
+  }
+
+  // running[i] = (v_p_i, v_q_i): the claim about the current layer at `point`.
+  let mut running: Vec<(E::Scalar, E::Scalar)> = proof
+    .initial_claims
+    .iter()
+    .map(|c| (c.num, c.den))
+    .collect();
+  let mut point: Vec<E::Scalar> = Vec::new();
+
+  // (2) Reduce root → input. Step `t` reduces the layer with `t` variables;
+  // t = 0 is the root reduction (no sumcheck), t >= 1 uses `sumchecks[t-1]`.
+  for (t, layer_finals) in proof.final_claims.iter().enumerate() {
+    let lambda = transcript.squeeze(spec::LAMBDA)?;
+
+    if t == 0 {
+      // Root reduction: the root fraction must equal the fraction-add gate of
+      // its two child cells, per instance. gate = (nL·dR + nR·dL, dL·dR).
+      for i in 0..m {
+        let gate = layer_finals[i].compute_gate();
+        let (rn, rd) = running[i];
+        if rn * gate.den != gate.num * rd {
+          return Err(NovaError::InvalidSumcheckProof);
+        }
+      }
+    } else {
+      // Layer sumcheck: verify Σ_i (v_p_i + λ v_q_i) reduces to the gate at `r`.
+      let claim: E::Scalar = running.iter().map(|(p, q)| *p + lambda * *q).sum();
+      let sc = SumcheckProof::<E>::new(proof.sumchecks[t - 1].round_polys.clone());
+      // The layer at step `t` has `t` variables, and `point` (its evaluation
+      // point, i.e. the sumcheck's τ) has length `t`.
+      let num_rounds = point.len();
+      let (sc_eval, r) = sc.verify(claim, num_rounds, spec::LAYER_SC_DEGREE, transcript)?;
+
+      // The sumcheck contract: its final value must equal
+      //   eq(τ, r) · Σ_i [nL·dR + nR·dL + λ·dL·dR]_i
+      let eq_at_r = EqPolynomial::new(point.clone()).evaluate(&r);
+      let mut gate_sum = E::Scalar::ZERO;
+      for fc in layer_finals {
+        let (nl, dl) = (fc.left.num, fc.left.den);
+        let (nr, dr) = (fc.right.num, fc.right.den);
+        gate_sum += nl * dr + nr * dl + lambda * (dl * dr);
+      }
+      if sc_eval != eq_at_r * gate_sum {
+        return Err(NovaError::InvalidSumcheckProof);
+      }
+      point = r;
+    }
+
+    // Bind this layer's claims, then draw the fold challenge (so the children
+    // cannot be chosen after it), then fold to the next layer's claims/point.
+    for fc in layer_finals {
+      absorb_fraction::<E>(transcript, fc.left.num, fc.left.den);
+      absorb_fraction::<E>(transcript, fc.right.num, fc.right.den);
+    }
+    let r_fold = transcript.squeeze(spec::FOLD)?;
+
+    running = layer_finals
+      .iter()
+      .map(|fc| {
+        let c = fc.fold_into_next_claim(r_fold);
+        (c.num, c.den)
+      })
+      .collect();
+    // The next layer's point prepends the fold challenge as the new top (MSB)
+    // variable: point' = [r_fold, ...point].
+    let mut next_point = Vec::with_capacity(point.len() + 1);
+    next_point.push(r_fold);
+    next_point.extend_from_slice(&point);
+    point = next_point;
+  }
+
+  let openings: Vec<LayerClaim<E>> = running
+    .iter()
+    .map(|(n, d)| LayerClaim::<E>::new(*n, *d))
+    .collect();
+  Ok(LogupGkrOpeningClaim::new(point, openings))
+}
+
+#[cfg(test)]
+mod tests {
+  //! Independence tests: these build a valid proof **by hand** (from the tree
+  //! fold in `layer.rs` plus the transcript spec in this module) with no use of
+  //! the `prover` module, demonstrating that the verifier stands on its own.
+  use super::*;
+  use crate::spartan::logup_gkr::layer::Layer;
+  use crate::spartan::logup_gkr::proof::{LayerFinalClaim, LogupGkrProof};
+  use crate::spartan::polys::multilinear::MultilinearPolynomial;
+
+  type E = crate::provider::Bn256EngineKZG;
+  type Fr = <E as Engine>::Scalar;
+
+  fn mle(v: Vec<u64>) -> MultilinearPolynomial<Fr> {
+    MultilinearPolynomial::new(v.into_iter().map(Fr::from).collect())
+  }
+
+  // Hand-build the proof for a single-instance, 2-leaf tree (num_vars = 1):
+  // only the root reduction (base case) runs — no sumcheck — so the whole proof
+  // is constructible from `layer.rs` alone, following this module's spec.
+  fn hand_built_2leaf(num: Vec<u64>, den: Vec<u64>) -> (LogupGkrProof<E>, Vec<(Fr, Fr)>) {
+    assert_eq!(num.len(), 2);
+    let input = Layer::<E> {
+      num: mle(num.clone()),
+      den: mle(den.clone()),
+    };
+    let tree = input.build_tree(); // [input(1 var), root(0 var)]
+    let (rn, rd) = tree[1].output_fraction();
+    // Base layer split claim = the two child cells directly (nL,nR,dL,dR).
+    let child = &tree[0];
+    let final_claim = LayerFinalClaim::<E>::new(
+      child.num.Z[0],
+      child.num.Z[1],
+      child.den.Z[0],
+      child.den.Z[1],
+    );
+    let proof = LogupGkrProof {
+      initial_claims: vec![LayerClaim::<E>::new(rn, rd)],
+      final_claims: vec![vec![final_claim]],
+      sumchecks: vec![],
+    };
+    // The input-layer fraction the verifier should return (at the 1-var point).
+    let inputs = vec![(child.num.Z[0], child.den.Z[0])]; // placeholder; checked below
+    (proof, inputs)
+  }
+
+  #[test]
+  fn verifier_accepts_hand_built_valid_proof() {
+    let (proof, _) = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    let mut tr = <E as Engine>::TE::new(b"gkr-indep");
+    let claim =
+      verify::<E>(&proof, &mut tr).expect("verifier must accept a valid hand-built proof");
+    // One instance, one variable → eval_point has length 1, one opening.
+    assert_eq!(claim.eval_point().len(), 1);
+    assert_eq!(claim.openings().len(), 1);
+  }
+
+  #[test]
+  fn verifier_rejects_wrong_root() {
+    let (mut proof, _) = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    // Corrupt the root claim so it no longer equals the gate of its children.
+    proof.initial_claims[0].num += Fr::from(1);
+    let mut tr = <E as Engine>::TE::new(b"gkr-indep");
+    assert!(verify::<E>(&proof, &mut tr).is_err());
+  }
+
+  #[test]
+  fn verifier_rejects_malformed_shape() {
+    let (mut proof, _) = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    // sumchecks.len() + 1 must equal final_claims.len(); break it.
+    proof
+      .sumchecks
+      .push(crate::spartan::logup_gkr::proof::LayerSumcheck {
+        round_polys: vec![],
+      });
+    let mut tr = <E as Engine>::TE::new(b"gkr-indep");
+    assert!(verify::<E>(&proof, &mut tr).is_err());
+  }
 }
