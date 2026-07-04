@@ -21,14 +21,22 @@
 //! verifier samples a fresh batching challenge `λ` and **demands** a sumcheck
 //! proving
 //! ```text
-//!   Σ_i (v_p_i + λ·v_q_i)  =  Σ_x eq(τ, x) · Σ_i g_i(x),
-//!   g_i(x) = nL_i(x)·dR_i(x) + nR_i(x)·dL_i(x) + λ·dL_i(x)·dR_i(x),
+//!   Σ_i (λ^{2i}·v_p_i + λ^{2i+1}·v_q_i)  =  Σ_x eq(τ, x) · Σ_i G_i(x),
+//!   G_i(x) = λ^{2i}·(nL_i·dR_i + nR_i·dL_i)(x) + λ^{2i+1}·(dL_i·dR_i)(x),
 //! ```
 //! where `(nL_i, nR_i, dL_i, dR_i)` are the num/den halves of instance `i`'s
-//! child layer. The sumcheck's final value must equal `eq(τ, r)·Σ_i g_i(r)`,
-//! reconstructed here from the prover's claimed `(nL,nR,dL,dR)` at `r`. This is
-//! a demand on the sumcheck backend: whatever the prover uses, its final
-//! evaluation must reconcile transparently against this expression (Nova's
+//! child layer. The 2m per-instance sub-claims (each instance's numerator and
+//! denominator relation) are batched by **distinct powers of λ** — a Horner
+//! combination over the flattened `[p_0,q_0,p_1,q_1,…]`. This is essential for
+//! soundness with m ≥ 2 instances: a plain `Σ_i (v_p_i + λ·v_q_i)` would expose
+//! only `Σ v_p` and `Σ v_q` (two slots regardless of m), so a prover could shift
+//! one instance's numerator up and another's down and stay undetected. Distinct
+//! λ-powers bind every instance's num and den separately.
+//!
+//! The sumcheck's final value must equal `eq(τ, r)·Σ_i G_i(r)`, reconstructed
+//! here from the prover's claimed `(nL,nR,dL,dR)` at `r`. This is a demand on
+//! the sumcheck backend: whatever the prover uses, its final evaluation must
+//! reconcile transparently against this expression (Nova's
 //! `prove_cubic_with_three_inputs` has this shape; see ppSNARK's outer check).
 //!
 //! ## Fiat-Shamir order (soundness)
@@ -130,8 +138,23 @@ pub fn verify<E: Engine>(
         }
       }
     } else {
-      // Layer sumcheck: verify Σ_i (v_p_i + λ v_q_i) reduces to the gate at `r`.
-      let claim: E::Scalar = running.iter().map(|(p, q)| *p + lambda * *q).sum();
+      // Layer sumcheck. The 2m per-instance sub-claims are batched by DISTINCT
+      // powers of λ: instance i's numerator gets λ^{2i}, its denominator λ^{2i+1}
+      // (Horner over the flattened `[p_0,q_0,p_1,q_1,...]`). A distinct power per
+      // component binds every instance separately — a plain `Σ_i (p_i + λ q_i)`
+      // would only expose `Σ p` and `Σ q` (two slots regardless of m), letting a
+      // prover offset one instance's numerator up and another's down undetected.
+      let claim: E::Scalar = {
+        let mut acc = E::Scalar::ZERO;
+        let mut pw = E::Scalar::ONE;
+        for (p, q) in &running {
+          acc += pw * *p;
+          pw *= lambda;
+          acc += pw * *q;
+          pw *= lambda;
+        }
+        acc
+      };
       let sc = SumcheckProof::<E>::new(proof.sumchecks[t - 1].round_polys.clone());
       // The layer at step `t` has `t` variables, and `point` (its evaluation
       // point, i.e. the sumcheck's τ) has length `t`.
@@ -139,15 +162,21 @@ pub fn verify<E: Engine>(
       let (sc_eval, r) = sc.verify(claim, num_rounds, spec::LAYER_SC_DEGREE, transcript)?;
 
       // The sumcheck contract: its final value must equal
-      //   eq(τ, r) · Σ_i [nL·dR + nR·dL + λ·dL·dR]_i
-      // The gate is the fraction-add of the two children; the batched sumcheck
-      // value is its numerator plus λ·its denominator.
+      //   eq(τ, r) · Σ_i [ λ^{2i}·gate_i.num + λ^{2i+1}·gate_i.den ]
+      // where gate_i is the fraction-add of instance i's two children.
       let eq_at_r = EqPolynomial::new(point.clone()).evaluate(&r);
-      let mut gate_sum = E::Scalar::ZERO;
-      for fc in layer_finals {
-        let g = fc.compute_gate();
-        gate_sum += g.num + lambda * g.den;
-      }
+      let gate_sum: E::Scalar = {
+        let mut acc = E::Scalar::ZERO;
+        let mut pw = E::Scalar::ONE;
+        for fc in layer_finals {
+          let g = fc.compute_gate();
+          acc += pw * g.num;
+          pw *= lambda;
+          acc += pw * g.den;
+          pw *= lambda;
+        }
+        acc
+      };
       if sc_eval != eq_at_r * gate_sum {
         return Err(NovaError::InvalidSumcheckProof);
       }

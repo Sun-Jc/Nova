@@ -93,9 +93,11 @@ fn prove_layer_sumcheck<E: Engine>(
       let e0 = eq.Z[x];
       let e1 = eq.Z[x + half];
       let e_step = e1 - e0;
-      // per-instance gate contributions
+      // per-instance gate contributions, batched by distinct powers of λ:
+      // instance i's numerator gets λ^{2i}, its denominator λ^{2i+1} (matches
+      // the verifier's Horner batching — see verifier.rs).
       let mut g = [E::Scalar::ZERO; 4];
-      for h in halves.iter() {
+      for (i, h) in halves.iter().enumerate() {
         let nl0 = h.nl.Z[x];
         let nl1 = h.nl.Z[x + half];
         let nr0 = h.nr.Z[x];
@@ -104,6 +106,8 @@ fn prove_layer_sumcheck<E: Engine>(
         let dl1 = h.dl.Z[x + half];
         let dr0 = h.dr.Z[x];
         let dr1 = h.dr.Z[x + half];
+        let w_num = lambda.pow_vartime([(2 * i) as u64]);
+        let w_den = w_num * lambda;
         for (k, &t) in [
           E::Scalar::ZERO,
           E::Scalar::ONE,
@@ -117,9 +121,10 @@ fn prove_layer_sumcheck<E: Engine>(
           let nr = nr0 + t * (nr1 - nr0);
           let dl = dl0 + t * (dl1 - dl0);
           let dr = dr0 + t * (dr1 - dr0);
-          // gate = fraction-add of the two children; batched value = num + λ·den.
+          // gate = fraction-add of the two children; batched value =
+          // λ^{2i}·gate.num + λ^{2i+1}·gate.den.
           let gate = Fraction::new(nl, dl) + Fraction::new(nr, dr);
-          g[k] += gate.num + lambda * gate.den;
+          g[k] += w_num * gate.num + w_den * gate.den;
         }
       }
       for k in 0..4 {
@@ -235,9 +240,19 @@ pub fn prove<E: Engine>(
       }
       let _ = (lambda, n); // λ unused at the base (single term, no batching)
     } else {
-      // Sumcheck over (num_vars - j) variables reduces
-      //   Σ_i (v_p_i + λ v_q_i) = Σ_x eq(point, x)·Σ_i [nL·dR + nR·dL + λ·dL·dR]_i
-      let claim: E::Scalar = running.iter().map(|(p, q)| *p + lambda * *q).sum();
+      // Sumcheck over (num_vars - j) variables. The 2m sub-claims are batched by
+      // distinct powers of λ (Horner over [p_0,q_0,p_1,q_1,...]) — see verifier.
+      let claim: E::Scalar = {
+        let mut acc = E::Scalar::ZERO;
+        let mut pw = E::Scalar::ONE;
+        for (p, q) in &running {
+          acc += pw * *p;
+          pw *= lambda;
+          acc += pw * *q;
+          pw *= lambda;
+        }
+        acc
+      };
 
       let mut halves: Vec<Halves<E>> = Vec::with_capacity(m);
       for i in 0..m {
@@ -359,14 +374,7 @@ mod tests {
     }
   }
 
-  // NOTE: the three round_trip tests below currently FAIL and are #[ignore]d.
-  // Blocker: `SumcheckProof::prove_batched_cubic`'s final evaluation does not
-  // reconcile against the naive `eq(taus,r)·Σα·A·B·C` (verified by probe: even
-  // 1-variable does not match), whereas `prove_cubic_with_three_inputs` does.
-  // The prover/verifier framework is otherwise complete and hp-aligned; the fix
-  // is to run the layer sumcheck on a transparent-eq backend. See
-  // jcbase/stage23-progress.md. Do NOT delete these — they are the acceptance
-  // test for the fix.
+  // Full prove -> verify round trips over the transparent-eq layer sumcheck.
   #[test]
   fn round_trip_single_instance_n4() {
     round_trip(vec![(vec![1, 2, 3, 4], vec![5, 6, 7, 8])]);
@@ -400,5 +408,49 @@ mod tests {
     proof.final_claims[0][0].left.num += Fr::from(1);
     let mut tr_v = <E as Engine>::TE::new(b"gkr-test");
     assert!(verifier::verify::<E>(&proof, &mut tr_v).is_err());
+  }
+
+  // Tamper-rejection with m >= 2: mutating per-instance final claims makes the
+  // verifier reject. NOTE: this is a general tamper test, NOT a discriminating
+  // C1 test — the offset below is also rejected under the old linear-lambda
+  // batching (caught by transcript binding + the gate's bilinearity). The
+  // lambda-batching was still changed to Horner (distinct powers per instance)
+  // to align with hp and remove the non-injective RLC; see
+  // jcbase/audit-verifier-vs-hp.md.
+  #[test]
+  fn verify_rejects_complementary_instance_offset() {
+    let inputs = [
+      (vec![1u64, 2, 3, 4], vec![5u64, 6, 7, 8]),
+      (vec![9u64, 8, 7, 6], vec![2u64, 3, 4, 5]),
+    ];
+    let layers: Vec<Layer<E>> = inputs
+      .iter()
+      .map(|(n, d)| Layer::<E> {
+        num: mle(n.clone()),
+        den: mle(d.clone()),
+      })
+      .collect();
+    let mut tr_p = <E as Engine>::TE::new(b"gkr-test");
+    let (proof_ok, _) = prove::<E>(layers, &mut tr_p).unwrap();
+
+    // Sanity: the honest proof verifies.
+    let mut tr_v0 = <E as Engine>::TE::new(b"gkr-test");
+    assert!(verifier::verify::<E>(&proof_ok, &mut tr_v0).is_ok());
+
+    // Target a SUMCHECK layer (final_claims index >= 1; index 0 is the base
+    // case whose per-instance cross-mult check is not batched). For num_vars=2,
+    // index 1 is the input-layer reduction. Apply a complementary offset to the
+    // two instances' left numerators.
+    let mut proof = proof_ok.clone();
+    assert!(proof.final_claims.len() >= 2 && proof.final_claims[1].len() == 2);
+    let delta = Fr::from(7);
+    proof.final_claims[1][0].left.num += delta;
+    proof.final_claims[1][1].left.num -= delta;
+
+    let mut tr_v = <E as Engine>::TE::new(b"gkr-test");
+    assert!(
+      verifier::verify::<E>(&proof, &mut tr_v).is_err(),
+      "tampered per-instance final claims must be rejected"
+    );
   }
 }
