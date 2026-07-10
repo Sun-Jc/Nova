@@ -87,6 +87,22 @@ pub fn absorb_fraction<E: Engine>(transcript: &mut E::TE, frac: Fraction<E::Scal
   transcript.absorb(spec::DEN, &frac.den);
 }
 
+/// Evaluates `Σ_k coeffs[k] · lambda^k` by Horner's method over the coefficient
+/// stream (lowest power first). Callers flatten their per-instance components
+/// into this order — e.g. the layer sumcheck feeds `[num_0, den_0, num_1,
+/// den_1, ...]`, so instance `i`'s numerator lands on `λ^{2i}` and its
+/// denominator on `λ^{2i+1}` (a distinct power per component; see the layer
+/// comment for why a shared power would be unsound).
+fn horner_eval<F: Field>(coeffs: impl IntoIterator<Item = F>, lambda: F) -> F {
+  let mut acc = F::ZERO;
+  let mut pw = F::ONE;
+  for c in coeffs {
+    acc += pw * c;
+    pw *= lambda;
+  }
+  acc
+}
+
 /// Verifies the batched fractional-sum proof and returns the shared opening
 /// claim (evaluation point + per-instance input-layer fractions). Accepts iff
 /// the proof satisfies the protocol defined in this module.
@@ -141,17 +157,7 @@ pub fn verify<E: Engine>(
       // component binds every instance separately — a plain `Σ_i (p_i + λ q_i)`
       // would only expose `Σ p` and `Σ q` (two slots regardless of m), letting a
       // prover offset one instance's numerator up and another's down undetected.
-      let claim: E::Scalar = {
-        let mut acc = E::Scalar::ZERO;
-        let mut pw = E::Scalar::ONE;
-        for frac in &running {
-          acc += pw * frac.num;
-          pw *= lambda;
-          acc += pw * frac.den;
-          pw *= lambda;
-        }
-        acc
-      };
+      let claim: E::Scalar = horner_eval(running.iter().flat_map(|f| [f.num, f.den]), lambda);
       let sc = SumcheckProof::<E>::new(proof.sumchecks[t - 1].round_polys.clone());
       // The layer at step `t` has `t` variables, and `point` (its evaluation
       // point, i.e. the sumcheck's τ) has length `t`.
@@ -162,18 +168,13 @@ pub fn verify<E: Engine>(
       //   eq(τ, r) · Σ_i [ λ^{2i}·gate_i.num + λ^{2i+1}·gate_i.den ]
       // where gate_i is the fraction-add of instance i's two children.
       let eq_at_r = EqPolynomial::new(point.clone()).evaluate(&r);
-      let gate_sum: E::Scalar = {
-        let mut acc = E::Scalar::ZERO;
-        let mut pw = E::Scalar::ONE;
-        for fc in layer_finals {
+      let gate_sum: E::Scalar = horner_eval(
+        layer_finals.iter().flat_map(|fc| {
           let g = fc.compute_gate();
-          acc += pw * g.num;
-          pw *= lambda;
-          acc += pw * g.den;
-          pw *= lambda;
-        }
-        acc
-      };
+          [g.num, g.den]
+        }),
+        lambda,
+      );
       if sc_eval != eq_at_r * gate_sum {
         return Err(NovaError::InvalidSumcheckProof);
       }
