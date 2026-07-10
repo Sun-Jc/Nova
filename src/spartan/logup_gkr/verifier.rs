@@ -115,12 +115,8 @@ pub fn verify<E: Engine>(
     absorb_fraction::<E>(transcript, *c);
   }
 
-  // running[i] = (v_p_i, v_q_i): the claim about the current layer at `point`.
-  let mut running: Vec<(E::Scalar, E::Scalar)> = proof
-    .initial_claims
-    .iter()
-    .map(|c| (c.num, c.den))
-    .collect();
+  // running[i] = v_p_i / v_q_i: the claim about the current layer at `point`.
+  let mut running: Vec<LayerClaim<E>> = proof.initial_claims.clone();
   let mut point: Vec<E::Scalar> = Vec::new();
 
   // (2) Reduce root → input. Step `t` reduces the layer with `t` variables;
@@ -133,8 +129,8 @@ pub fn verify<E: Engine>(
       // its two child cells, per instance. gate = (nL·dR + nR·dL, dL·dR).
       for i in 0..m {
         let gate = layer_finals[i].compute_gate();
-        let (rn, rd) = running[i];
-        if rn * gate.den != gate.num * rd {
+        let r = running[i];
+        if r.num * gate.den != gate.num * r.den {
           return Err(NovaError::InvalidSumcheckProof);
         }
       }
@@ -148,10 +144,10 @@ pub fn verify<E: Engine>(
       let claim: E::Scalar = {
         let mut acc = E::Scalar::ZERO;
         let mut pw = E::Scalar::ONE;
-        for (p, q) in &running {
-          acc += pw * *p;
+        for frac in &running {
+          acc += pw * frac.num;
           pw *= lambda;
-          acc += pw * *q;
+          acc += pw * frac.den;
           pw *= lambda;
         }
         acc
@@ -194,10 +190,7 @@ pub fn verify<E: Engine>(
 
     running = layer_finals
       .iter()
-      .map(|fc| {
-        let c = fc.fold_into_next_claim(r_fold);
-        (c.num, c.den)
-      })
+      .map(|fc| fc.fold_into_next_claim(r_fold))
       .collect();
     // The next layer's point prepends the fold challenge as the new top (MSB)
     // variable: point' = [r_fold, ...point].
@@ -207,11 +200,7 @@ pub fn verify<E: Engine>(
     point = next_point;
   }
 
-  let openings: Vec<LayerClaim<E>> = running
-    .iter()
-    .map(|(n, d)| LayerClaim::<E>::new(*n, *d))
-    .collect();
-  Ok(LogupGkrOpeningClaim::new(point, openings))
+  Ok(LogupGkrOpeningClaim::new(point, running))
 }
 
 #[cfg(test)]
