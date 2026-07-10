@@ -86,7 +86,7 @@ fn prove_layer_sumcheck<E: Engine>(
     let half = len / 2;
 
     // Evaluate the round polynomial P(t) = Σ_x eq_t(x)·G_t(x) at t = 0,1,2,3,
-    // where at parameter t each MLE m contributes m0 + t·(m1 − m0) (m0 = low
+    // where at parameter t each MLE m contributes m0 + t·(m1 - m0) (m0 = low
     // half, m1 = high half) — the MSB-first bind direction.
     let mut p = [E::Scalar::ZERO; 4];
     for x in 0..half {

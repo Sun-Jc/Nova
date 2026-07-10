@@ -19,7 +19,7 @@ use crate::spartan::polys::univariate::CompressedUniPoly;
 use crate::traits::Engine;
 use serde::{Deserialize, Serialize};
 
-/// `rlc(a, b, r) = a + r·(b − a)` — the two-to-one fold of split claims.
+/// `rlc(a, b, r) = a + r·(b - a)` — the two-to-one fold of split claims.
 #[inline(always)]
 fn rlc<F: ff::Field>(a: F, b: F, r: F) -> F {
   a + r * (b - a)

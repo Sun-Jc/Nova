@@ -27,7 +27,7 @@
 //!    entry of `openings` — the analogue of hp `reconcile_openings` /
 //!    `eval_at_openings`;
 //! 3. runs the `0/den` zero-sum balance check.
-//! Steps 2–3 are the host's job, never the GKR verifier's.
+//! Steps 2-3 are the host's job, never the GKR verifier's.
 //!
 //! References: hyperplonk-logup-gkr (primary) and lambdaworks `gkr-logup`
 //! (secondary); divergences are flagged at the use site.

@@ -27,7 +27,7 @@ use rayon::prelude::*;
 
 /// Parallelize `fold_up` only above this many output cells. A fold cell is a
 /// few field multiplications — very cheap — so rayon's per-fold scheduling
-/// overhead (~1–3 ms) dominates until the layer is large. Measured crossover
+/// overhead (~1-3 ms) dominates until the layer is large. Measured crossover
 /// (BN254, `benches/logup_gkr.rs` `fold-crossover`): serial wins up to ~32768
 /// (tie), parallel wins from ~65536 (2.3×) growing with size. NOT the crate's
 /// `PARALLEL_THRESHOLD` (=4096), which is tuned for per-element curve ops (MSM),
@@ -200,8 +200,8 @@ mod tests {
   #[test]
   fn logup_balance_gives_zero_numerator() {
     // A balanced multiset: table {a,b} with multiplicities {1,1}, lookups {a,b}.
-    // Σ 1/(α−a) + 1/(α−b) − 1/(α−a) − 1/(α−b) = 0. Encode as one instance's
-    // input layer with num = [+1,+1,-1,-1], den = [α−a, α−b, α−a, α−b].
+    // Σ 1/(α-a) + 1/(α-b) - 1/(α-a) - 1/(α-b) = 0. Encode as one instance's
+    // input layer with num = [+1,+1,-1,-1], den = [α-a, α-b, α-a, α-b].
     let alpha = Fr::from(100);
     let a = Fr::from(7);
     let b = Fr::from(9);
