@@ -199,7 +199,7 @@ pub fn prove<E: Engine>(
     })
     .collect();
   for c in &initial_claims {
-    absorb_fraction::<E>(transcript, c.num, c.den);
+    absorb_fraction::<E>(transcript, *c);
   }
 
   // Running per-instance claims (v_p_i, v_q_i) about `layers[j]` at `eval_point`.
@@ -277,8 +277,8 @@ pub fn prove<E: Engine>(
 
     // Absorb final claims, sample fold challenge, update running claims + point.
     for fc in &layer_finals {
-      absorb_fraction::<E>(transcript, fc.left.num, fc.left.den);
-      absorb_fraction::<E>(transcript, fc.right.num, fc.right.den);
+      absorb_fraction::<E>(transcript, fc.left);
+      absorb_fraction::<E>(transcript, fc.right);
     }
     let fold_r = transcript.squeeze(spec::FOLD)?;
 

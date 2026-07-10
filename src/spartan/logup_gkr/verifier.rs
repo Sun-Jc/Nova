@@ -53,6 +53,7 @@
 //! folds, would each break soundness (adaptive-forgery gaps).
 
 use crate::errors::NovaError;
+use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::logup_gkr::proof::{LayerClaim, LogupGkrOpeningClaim, LogupGkrProof};
 use crate::spartan::polys::eq::EqPolynomial;
 use crate::spartan::sumcheck::SumcheckProof;
@@ -81,9 +82,9 @@ pub mod spec {
 
 /// Absorbs a fraction `(num, den)` into the transcript, in the order the
 /// protocol fixes. Shared with the prover (which imports this).
-pub fn absorb_fraction<E: Engine>(transcript: &mut E::TE, num: E::Scalar, den: E::Scalar) {
-  transcript.absorb(spec::NUM, &num);
-  transcript.absorb(spec::DEN, &den);
+pub fn absorb_fraction<E: Engine>(transcript: &mut E::TE, frac: Fraction<E::Scalar>) {
+  transcript.absorb(spec::NUM, &frac.num);
+  transcript.absorb(spec::DEN, &frac.den);
 }
 
 /// Verifies the batched fractional-sum proof and returns the shared opening
@@ -111,7 +112,7 @@ pub fn verify<E: Engine>(
 
   // (1) Bind the root claims before any challenge is drawn.
   for c in &proof.initial_claims {
-    absorb_fraction::<E>(transcript, c.num, c.den);
+    absorb_fraction::<E>(transcript, *c);
   }
 
   // running[i] = (v_p_i, v_q_i): the claim about the current layer at `point`.
@@ -186,8 +187,8 @@ pub fn verify<E: Engine>(
     // Bind this layer's claims, then draw the fold challenge (so the children
     // cannot be chosen after it), then fold to the next layer's claims/point.
     for fc in layer_finals {
-      absorb_fraction::<E>(transcript, fc.left.num, fc.left.den);
-      absorb_fraction::<E>(transcript, fc.right.num, fc.right.den);
+      absorb_fraction::<E>(transcript, fc.left);
+      absorb_fraction::<E>(transcript, fc.right);
     }
     let r_fold = transcript.squeeze(spec::FOLD)?;
 
