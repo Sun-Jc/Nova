@@ -34,7 +34,6 @@
 
 pub mod fraction;
 pub mod layer;
-pub mod mem_check;
 pub mod proof;
 pub mod prover;
 pub mod verifier;

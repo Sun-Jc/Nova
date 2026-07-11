@@ -8,6 +8,10 @@
 pub mod direct;
 /// Logup-GKR fractional-sum memory-check (replaces ppSNARK inverse-logup).
 pub mod logup_gkr;
+/// Bridge layer wiring the Logup-GKR argument to ppSNARK's memory-check
+/// (host reconcile + balance; rerandomize of L_row/L_col into the inner
+/// sumcheck).
+pub mod mem_check;
 pub mod ppsnark;
 pub mod snark;
 

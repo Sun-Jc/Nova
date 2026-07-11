@@ -1,16 +1,20 @@
-//! Host-layer memory-check verifier for ppSNARK, built on Logup-GKR.
+//! Bridge layer wiring Logup-GKR to ppSNARK's memory-check.
 //!
-//! **Verifier-first.** This module is the *host* half of the Logup-GKR
-//! memory-check: it wraps the frozen `logup_gkr::verify` (which owns no PCS)
-//! and closes soundness by (1) recomputing each logup instance's input-layer
-//! fraction from the columns the prover opens at the GKR evaluation point, (2)
-//! checking those match what the GKR reduced to, and (3) running the fractional
-//! balance check. It is written **before** any prover: the set of evaluations
-//! [`MemCheckOpenings`] names here *is* the contract a prover must satisfy — the
-//! prover must open exactly these columns at exactly [`eval_point`], and no
-//! others.
+//! This module is the *host* half of the Logup-GKR memory-check — the link
+//! between the pure, ppSNARK-agnostic `logup_gkr` argument (which owns no PCS)
+//! and `ppsnark` (which owns the commitments, the inner sumcheck, and the
+//! rerandomization of `L_row`/`L_col`). It lives outside `logup_gkr/` on
+//! purpose: that module stays a standalone fractional-sum argument, while this
+//! one depends on both sides.
 //!
-//! [`eval_point`]: LogupGkrOpeningClaim::eval_point
+//! **Verifier-first.** The verifier half here wraps the frozen
+//! `logup_gkr::verify` and closes soundness by (1) recomputing each logup
+//! instance's input-layer fraction from the columns the prover opens at the GKR
+//! evaluation point, (2) checking those match what the GKR reduced to, and (3)
+//! running the fractional balance check. It is written **before** any prover:
+//! the set of evaluations [`MemCheckOpenings`] names here *is* the contract a
+//! prover must satisfy — the prover must open exactly these columns at exactly
+//! the GKR eval_point, and no others.
 //!
 //! ## The four sub-instances (why four, not two)
 //! ppSNARK's memory-check is two logup relations (`row`, `col`), each a balance
