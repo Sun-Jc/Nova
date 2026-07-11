@@ -98,17 +98,19 @@ pub struct MemCheckOpenings<E: Engine> {
   pub eval_mem_col: E::Scalar,
 }
 
-/// The raw length-N memory-check columns the prover feeds into Logup-GKR.
+/// The prover's memory-check witness: the raw length-N columns fed into
+/// Logup-GKR.
 ///
 /// These are exactly ppSNARK's padded memory-check columns (all length
-/// `N = 2^{log N}`; see `jcbase/ppsnark-pad-to-N.md`). `build_input_layers`
-/// turns them into the four GKR input layers, and the prover later opens the
-/// subset named by [`MemCheckOpenings`] at the shared point. Field meanings
-/// match the four-sub-instance table in the module docs:
+/// `N = 2^{log N}`; see `jcbase/ppsnark-pad-to-N.md`). [`build_input_layers`]
+/// turns them into the four GKR input layers, and [`prove`] consumes the
+/// witness, opening the subset named by [`MemCheckOpenings`] at the shared
+/// point. Field meanings match the four-sub-instance table in the module docs:
 /// - `mem_row = eq(r_outer_full, ·)`, `mem_col = z` (table values);
 /// - `L_row`/`L_col` the lookup columns, `addr_row = row`/`addr_col = col` the
 ///   access addresses, `ts_row`/`ts_col` the multiplicities.
-pub struct MemCheckColumns<E: Engine> {
+#[derive(Clone)]
+pub struct MemCheckWitness<E: Engine> {
   /// Row table values `mem_row = eq(r_outer_full, ·)`.
   pub mem_row: Vec<E::Scalar>,
   /// Col table values `mem_col = z`.
@@ -146,7 +148,7 @@ pub struct MemCheckColumns<E: Engine> {
 /// power of two (`debug_assert`ed); the returned layers each have `log N`
 /// variables, the shared GKR depth.
 pub fn build_input_layers<E: Engine>(
-  cols: &MemCheckColumns<E>,
+  cols: &MemCheckWitness<E>,
   gamma: E::Scalar,
   r: E::Scalar,
 ) -> Vec<Layer<E>> {
@@ -339,6 +341,104 @@ pub fn verify<E: Engine>(
   Ok(eval_point.to_vec())
 }
 
+/// Prover output for the Logup-GKR memory-check, before ppSNARK integration.
+///
+/// Bundles the three things the three downstream consumers need:
+/// - `proof`: the GKR proof, absorbed into the SNARK and replayed by [`verify`];
+/// - `openings`: the column evaluations at the GKR `eval_point`, the
+///   [`MemCheckOpenings`] the host reconcile step checks. In a standalone run
+///   these are opened directly at `eval_point`; once wired into ppSNARK the same
+///   values arrive at the shared inner point via `rerandomize` instead;
+/// - `rerandomize`: the [`RerandomizeSumcheckInstance`] that moves `L_row`/
+///   `L_col` from `eval_point` into the inner sumcheck bundle (unused by the
+///   standalone verifier, produced here so the full plumbing is exercised).
+pub struct MemCheckProverOutput<E: Engine> {
+  /// The GKR fractional-sum proof.
+  pub proof: LogupGkrProof<E>,
+  /// Column evaluations at the GKR `eval_point` (host reconcile input).
+  pub openings: MemCheckOpenings<E>,
+  /// L_row/L_col opening-point reduction into the inner sumcheck.
+  pub rerandomize: RerandomizeSumcheckInstance<E>,
+  /// The shared GKR evaluation point (length `log N`).
+  pub eval_point: Vec<E::Scalar>,
+}
+
+/// Proves the ppSNARK memory-check via Logup-GKR from the raw columns.
+///
+/// This is the prover-side entry point mirroring [`verify`]. It:
+/// 1. builds the four GKR input layers ([`build_input_layers`]);
+/// 2. runs the frozen GKR prover to fold them and emit the proof plus the shared
+///    `eval_point`;
+/// 3. evaluates the opened columns at `eval_point` to form [`MemCheckOpenings`];
+/// 4. builds the [`RerandomizeSumcheckInstance`] that will later carry
+///    `L_row`/`L_col` into the inner sumcheck.
+///
+/// The transcript must be in the same state the verifier expects at the GKR
+/// slot (the GKR prover absorbs exactly what [`verify`] replays). `(gamma, r)`
+/// are ppSNARK's memory-check fingerprint challenges.
+pub fn prove<E: Engine>(
+  witness: MemCheckWitness<E>,
+  gamma: E::Scalar,
+  r: E::Scalar,
+  transcript: &mut E::TE,
+) -> Result<MemCheckProverOutput<E>, NovaError> {
+  // (1)+(2) Build the four input layers and fold them through the GKR trees.
+  let layers = build_input_layers(&witness, gamma, r);
+  let (proof, claim) = crate::spartan::logup_gkr::prover::prove::<E>(layers, transcript)?;
+  let eval_point = claim.eval_point().to_vec();
+
+  // (3) Assemble the opened columns at the shared point. The prover is honest
+  // and owns every column, so each opening is taken by the cheapest route that
+  // yields the same value:
+  // - `ts_row`/`ts_col` ARE the table-side numerators the GKR reduction already
+  //   produced (openings 0, 2), so reuse them directly;
+  // - `addr_row`/`addr_col`/`mem_col` are fused into the GKR dens
+  //   (`L·γ + addr + r`, `mem·γ + id + r`), so invert those closed forms instead
+  //   of re-evaluating the MLEs — one field op vs an N-wide evaluation;
+  // - `L_row`/`L_col` must be evaluated directly (they seed the rerandomize
+  //   claims and are the other unknown in the access dens), so they stay `ev`.
+  // This is a pure prover-side shortcut: soundness lives in the verifier, which
+  // opens each column against its own commitment (see `verify`).
+  let ev = |v: &[E::Scalar]| MultilinearPolynomial::evaluate_with(v, &eval_point);
+  let [row_table, row_access, col_table, col_access] = claim.openings()[..] else {
+    return Err(NovaError::InvalidNumInstances);
+  };
+  let eval_L_row = ev(&witness.L_row);
+  let eval_L_col = ev(&witness.L_col);
+  let eval_id = IdentityPolynomial::<E::Scalar>::new(eval_point.len()).evaluate(&eval_point);
+  let gamma_inv = gamma.invert().expect("fingerprint gamma is nonzero");
+  let openings = MemCheckOpenings {
+    eval_L_row,
+    eval_L_col,
+    // row_access.den = L_row·γ + addr_row + r  ⇒  addr_row = den − L_row·γ − r
+    eval_row: row_access.den - eval_L_row * gamma - r,
+    // col_access.den = L_col·γ + addr_col + r  ⇒  addr_col = den − L_col·γ − r
+    eval_col: col_access.den - eval_L_col * gamma - r,
+    eval_ts_row: row_table.num, // row_table numerator
+    eval_ts_col: col_table.num, // col_table numerator
+    // col_table.den = mem_col·γ + id + r  ⇒  mem_col = (den − id − r)·γ⁻¹
+    eval_mem_col: (col_table.den - eval_id - r) * gamma_inv,
+  };
+
+  // (4) Rerandomize instance: L_row/L_col at eval_point → inner sumcheck. Its
+  // initial claims are exactly L_row(eval_point) / L_col(eval_point). The
+  // witness is consumed here, so its L columns are moved in (no clone).
+  let rerandomize = RerandomizeSumcheckInstance::new(
+    eval_point.clone(),
+    witness.L_row,
+    witness.L_col,
+    eval_L_row,
+    eval_L_col,
+  );
+
+  Ok(MemCheckProverOutput {
+    proof,
+    openings,
+    rerandomize,
+    eval_point,
+  })
+}
+
 /// Rerandomizes the GKR verifier's `L_row`/`L_col` evaluation requests into the
 /// inner sumcheck, so both columns are opened at the shared inner point rather
 /// than at the GKR `eval_point`.
@@ -477,18 +577,17 @@ mod tests {
   //! the raw columns at the GKR `eval_point`, and checks `mem_check::verify`
   //! accepts a balanced witness and rejects a tampered one. The GKR prover is
   //! trusted here (it has its own round-trip tests); what is under test is the
-  //! host reconcile + balance logic this module defines.
+  //! End-to-end tests through the top-level [`prove`]/[`verify`] pair. Each
+  //! builds a balanced N=4 witness, proves it (four sub-instances folded by the
+  //! frozen GKR prover), and checks the host verifier accepts it and rejects
+  //! tampered multiplicities or mismatched openings. What is under test is this
+  //! module's own logic — `build_input_layers`, reconcile, balance, and the
+  //! rerandomize claims — with the GKR prover/verifier trusted (own tests).
   use super::*;
-  use crate::spartan::logup_gkr::prover;
-  use crate::spartan::polys::multilinear::MultilinearPolynomial;
   use crate::traits::TranscriptEngineTrait;
 
   type E = crate::provider::Bn256EngineKZG;
   type Fr = <E as Engine>::Scalar;
-
-  fn mle(v: Vec<Fr>) -> MultilinearPolynomial<Fr> {
-    MultilinearPolynomial::new(v)
-  }
 
   /// A hand-built N=4 memory-check witness whose row and col relations both
   /// balance. We choose the fingerprint pieces directly (γ, r and the per-cell
@@ -506,27 +605,7 @@ mod tests {
     gamma: Fr,
     r: Fr,
     r_outer_full: Vec<Fr>,
-    cols: MemCheckColumns<E>,
-  }
-
-  impl Witness {
-    // Build the four input layers via the production builder (under test).
-    fn layers(&self) -> Vec<Layer<E>> {
-      build_input_layers::<E>(&self.cols, self.gamma, self.r)
-    }
-
-    fn openings(&self, pt: &[Fr]) -> MemCheckOpenings<E> {
-      let ev = |v: &[Fr]| mle(v.to_vec()).evaluate(pt);
-      MemCheckOpenings {
-        eval_L_row: ev(&self.cols.L_row),
-        eval_L_col: ev(&self.cols.L_col),
-        eval_row: ev(&self.cols.addr_row),
-        eval_col: ev(&self.cols.addr_col),
-        eval_ts_row: ev(&self.cols.ts_row),
-        eval_ts_col: ev(&self.cols.ts_col),
-        eval_mem_col: ev(&self.cols.mem_col),
-      }
-    }
+    cols: MemCheckWitness<E>,
   }
 
   // A balanced N=4 witness. mem_row is eq(r_outer_full, ·) so the verifier can
@@ -548,7 +627,7 @@ mod tests {
       gamma: Fr::from(3),
       r: Fr::from(9),
       r_outer_full,
-      cols: MemCheckColumns {
+      cols: MemCheckWitness {
         mem_row,
         mem_col,
         L_row,
@@ -563,10 +642,16 @@ mod tests {
 
   fn run(w: &Witness) -> Result<Vec<Fr>, NovaError> {
     let mut tr_p = <E as Engine>::TE::new(b"memcheck-test");
-    let (proof, claim) = prover::prove::<E>(w.layers(), &mut tr_p).expect("prove");
-    let openings = w.openings(claim.eval_point());
+    let out = prove::<E>(w.cols.clone(), w.gamma, w.r, &mut tr_p).expect("prove");
     let mut tr_v = <E as Engine>::TE::new(b"memcheck-test");
-    verify::<E>(&proof, w.gamma, w.r, &w.r_outer_full, &openings, &mut tr_v)
+    verify::<E>(
+      &out.proof,
+      w.gamma,
+      w.r,
+      &w.r_outer_full,
+      &out.openings,
+      &mut tr_v,
+    )
   }
 
   #[test]
@@ -592,13 +677,34 @@ mod tests {
     // reconcile step (recomputed fraction vs GKR opening) fails.
     let w = balanced_witness();
     let mut tr_p = <E as Engine>::TE::new(b"memcheck-test");
-    let (proof, claim) = prover::prove::<E>(w.layers(), &mut tr_p).expect("prove");
-    let mut openings = w.openings(claim.eval_point());
-    openings.eval_L_row += Fr::ONE; // inconsistent with the committed layer
+    let mut out = prove::<E>(w.cols.clone(), w.gamma, w.r, &mut tr_p).expect("prove");
+    out.openings.eval_L_row += Fr::ONE; // inconsistent with the committed layer
     let mut tr_v = <E as Engine>::TE::new(b"memcheck-test");
     assert!(
-      verify::<E>(&proof, w.gamma, w.r, &w.r_outer_full, &openings, &mut tr_v).is_err(),
+      verify::<E>(
+        &out.proof,
+        w.gamma,
+        w.r,
+        &w.r_outer_full,
+        &out.openings,
+        &mut tr_v
+      )
+      .is_err(),
       "must reject an opening that disagrees with the GKR reduction"
+    );
+  }
+
+  #[test]
+  fn rerandomize_claims_match_openings() {
+    // The rerandomize instance's initial claims must be exactly
+    // L_row(eval_point) / L_col(eval_point), i.e. the opened values.
+    let w = balanced_witness();
+    let mut tr_p = <E as Engine>::TE::new(b"memcheck-test");
+    let out = prove::<E>(w.cols.clone(), w.gamma, w.r, &mut tr_p).expect("prove");
+    let claims = out.rerandomize.initial_claims();
+    assert_eq!(
+      claims,
+      vec![out.openings.eval_L_row, out.openings.eval_L_col]
     );
   }
 }
