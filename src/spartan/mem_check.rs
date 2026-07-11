@@ -58,8 +58,12 @@ use crate::spartan::logup_gkr::proof::LogupGkrProof;
 use crate::spartan::logup_gkr::verifier;
 use crate::spartan::polys::eq::EqPolynomial;
 use crate::spartan::polys::identity::IdentityPolynomial;
+use crate::spartan::polys::multilinear::MultilinearPolynomial;
+use crate::spartan::sumcheck::eq_sumcheck::EqSumCheckInstance;
+use crate::spartan::sumcheck::{SumcheckEngine, SumcheckProof};
 use crate::traits::Engine;
 use ff::Field;
+use rayon::prelude::*;
 
 /// Fixed sub-instance count (`row_table, row_access, col_table, col_access`).
 pub const NUM_SUB_INSTANCES: usize = 4;
@@ -206,6 +210,137 @@ pub fn verify<E: Engine>(
   }
 
   Ok(eval_point.to_vec())
+}
+
+/// Rerandomizes the GKR verifier's `L_row`/`L_col` evaluation requests into the
+/// inner sumcheck, so both columns are opened at the shared inner point rather
+/// than at the GKR `eval_point`.
+///
+/// # What it proves
+/// The GKR verifier ([`verify`]) reduces to two evaluation requests,
+/// `L_row(eval_point)` and `L_col(eval_point)`, at the GKR fold point
+/// `eval_point` (length `log N`). Each is rewritten via the MLE identity
+/// ```text
+///   L(eval_point) = Σ_y eq(eval_point, y) · L(y)
+/// ```
+/// into an N-variable sumcheck over the SAME domain `y ∈ {0,1}^{log N}` as the
+/// inner ABC/E sumcheck, so both fold into the shared `prove_helper` bundle and
+/// land at the common point `r_inner_batched`. This mirrors ppSNARK's existing
+/// E-claim (`Σ eq(r_outer, y) · E(y)`), which rerandomizes `E`'s opening point
+/// exactly the same way — this instance is that mechanism applied to `L_row`
+/// and `L_col`, sharing one `eq_sumcheck` because both use the same
+/// `eval_point`.
+///
+/// # Degree
+/// Each summand `eq(eval_point, ·) · L(·)` is a product of two multilinears, so
+/// the true round-polynomial degree is **2**. [`prove_helper`] however hardcodes
+/// degree 3 (it interpolates every instance with `from_evals_deg3` and asserts
+/// all bundled instances share a degree), so [`Self::degree`] reports 3 and the
+/// quadratic evals carry a zero cubic coefficient — identical to how the
+/// E-claim rides in the degree-3 inner instance. Running this outside
+/// `prove_helper` could reclaim the extra sample point (see HANDOFF O1).
+///
+/// [`prove_helper`]: super::ppsnark
+pub struct RerandomizeSumcheckInstance<E: Engine> {
+  /// Transparent `eq(eval_point, ·)` factor, shared by both columns.
+  eq_sumcheck: EqSumCheckInstance<E>,
+  /// Row lookup polynomial `L_row`.
+  poly_L_row: MultilinearPolynomial<E::Scalar>,
+  /// Col lookup polynomial `L_col`.
+  poly_L_col: MultilinearPolynomial<E::Scalar>,
+  /// Running claim for the `L_row` sub-claim (BDDT, eprint 2025/1117 §6.2).
+  running_claim_row: E::Scalar,
+  /// Running claim for the `L_col` sub-claim.
+  running_claim_col: E::Scalar,
+  /// Saved `[p(0), 0, p(-1)]` for `L_row`, used by [`Self::bound`].
+  saved_evals_row: [E::Scalar; 3],
+  /// Saved `[p(0), 0, p(-1)]` for `L_col`.
+  saved_evals_col: [E::Scalar; 3],
+}
+
+impl<E: Engine> RerandomizeSumcheckInstance<E> {
+  /// Builds the instance from the GKR `eval_point` and the two lookup columns.
+  ///
+  /// `claim_L_row`/`claim_L_col` are the GKR verifier's requested values
+  /// `L_row(eval_point)`/`L_col(eval_point)`; they seed the running claims and
+  /// are the instance's initial sumcheck claims. `L_row`/`L_col` must both have
+  /// length `N = 2^{eval_point.len()}`.
+  pub fn new(
+    eval_point: Vec<E::Scalar>,
+    L_row: Vec<E::Scalar>,
+    L_col: Vec<E::Scalar>,
+    claim_L_row: E::Scalar,
+    claim_L_col: E::Scalar,
+  ) -> Self {
+    Self {
+      eq_sumcheck: EqSumCheckInstance::new(eval_point),
+      poly_L_row: MultilinearPolynomial::new(L_row),
+      poly_L_col: MultilinearPolynomial::new(L_col),
+      running_claim_row: claim_L_row,
+      running_claim_col: claim_L_col,
+      saved_evals_row: [E::Scalar::ZERO; 3],
+      saved_evals_col: [E::Scalar::ZERO; 3],
+    }
+  }
+}
+
+impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
+  fn initial_claims(&self) -> Vec<E::Scalar> {
+    vec![self.running_claim_row, self.running_claim_col]
+  }
+
+  fn degree(&self) -> usize {
+    // True degree is 2 (eq · L); reported as 3 to ride in the degree-3
+    // prove_helper bundle. See the type docs and HANDOFF O1.
+    3
+  }
+
+  fn size(&self) -> usize {
+    assert_eq!(self.poly_L_row.len(), self.poly_L_col.len());
+    self.poly_L_row.len()
+  }
+
+  fn evaluation_points(&mut self) -> Vec<Vec<E::Scalar>> {
+    // Each column is one quadratic `eq(eval_point, ·) · L(·)`, sampled the same
+    // way as the E-claim. The cubic coefficient is zero (degree 2).
+    let ((row_0, _, row_inf), (col_0, _, col_inf)) = rayon::join(
+      || {
+        self
+          .eq_sumcheck
+          .evaluation_points_quadratic_with_one_input(&self.poly_L_row, self.running_claim_row)
+      },
+      || {
+        self
+          .eq_sumcheck
+          .evaluation_points_quadratic_with_one_input(&self.poly_L_col, self.running_claim_col)
+      },
+    );
+
+    self.saved_evals_row = [row_0, E::Scalar::ZERO, row_inf];
+    self.saved_evals_col = [col_0, E::Scalar::ZERO, col_inf];
+
+    vec![
+      vec![row_0, E::Scalar::ZERO, row_inf],
+      vec![col_0, E::Scalar::ZERO, col_inf],
+    ]
+  }
+
+  fn bound(&mut self, r: &E::Scalar) {
+    self.running_claim_row =
+      SumcheckProof::<E>::update_claim(self.running_claim_row, &self.saved_evals_row, r);
+    self.running_claim_col =
+      SumcheckProof::<E>::update_claim(self.running_claim_col, &self.saved_evals_col, r);
+
+    [&mut self.poly_L_row, &mut self.poly_L_col]
+      .par_iter_mut()
+      .for_each(|poly| poly.bind_poly_var_top(r));
+
+    self.eq_sumcheck.bound(r);
+  }
+
+  fn final_claims(&self) -> Vec<Vec<E::Scalar>> {
+    vec![vec![self.poly_L_row[0]], vec![self.poly_L_col[0]]]
+  }
 }
 
 #[cfg(test)]
