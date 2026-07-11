@@ -388,29 +388,26 @@ pub fn verify<E: Engine>(
   Ok(eval_point.to_vec())
 }
 
-/// First rerandomize coeff index in the batched inner sumcheck: memory-check
-/// contributes coeffs `[base, base + NUM_RERAND_COLUMNS)`, after the 2 inner
-/// (ABC, E) and 1 witness claims that occupy 6..9. (Coeffs 0..6 are unused
-/// under Logup-GKR — the inverse-logup path's six memory routes.)
-pub const RERAND_BASE: usize = 9;
+/// First rerandomize coeff index in the batched inner sumcheck. `prove_helper`
+/// places the memory-check slot first, so under Logup-GKR the seven rerandomize
+/// columns occupy coeffs `[0, NUM_RERAND_COLUMNS)`, and the inner (ABC, E) and
+/// witness claims follow at `NUM_RERAND_COLUMNS ..`.
+pub const RERAND_BASE: usize = 0;
+
+/// Number of batched-inner claims the memory-check slot contributes (the seven
+/// rerandomize columns). The inner/witness claims come after these.
+pub const NUM_MEM_CLAIMS: usize = NUM_RERAND_COLUMNS;
 
 /// Prover side of the Logup-GKR memory-check: folds the four sub-instances into
 /// GKR trees, absorbs the claimed column values, and returns the rerandomize
-/// instance (the first `prove_helper` slot), the proof data to store, and the
-/// claimed values (RERAND order) for the inner sumcheck's initial claim.
+/// instance (the first `prove_helper` slot) and the proof data to store (which
+/// itself carries the claimed column values in `rerand_claims`).
 pub fn prove_step<E: Engine>(
   witness: MemCheckWitness<E>,
   gamma: E::Scalar,
   r: E::Scalar,
   transcript: &mut E::TE,
-) -> Result<
-  (
-    RerandomizeSumcheckInstance<E>,
-    GkrProofData<E>,
-    [E::Scalar; NUM_RERAND_COLUMNS],
-  ),
-  NovaError,
-> {
+) -> Result<(RerandomizeSumcheckInstance<E>, GkrProofData<E>), NovaError> {
   let out = prove::<E>(witness, gamma, r, transcript)?;
   let rerand_claims = out.openings.rerand_claims();
   // Absorb the claimed column values before the inner sumcheck's `s` so the
@@ -420,7 +417,7 @@ pub fn prove_step<E: Engine>(
     proof: out.proof,
     rerand_claims,
   };
-  Ok((out.rerandomize, data, rerand_claims))
+  Ok((out.rerandomize, data))
 }
 
 /// Verifier side, transcript phase: replays the GKR proof, reconciles the

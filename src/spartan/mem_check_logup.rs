@@ -450,6 +450,11 @@ pub fn prove_step<E: Engine>(
   Ok((inst, comm_mem_oracles, mem_oracles))
 }
 
+/// Number of batched-inner claims the memory-check slot contributes (the six
+/// inverse-logup routes at coeffs `[0, 6)`). `prove_helper` places the
+/// memory-check slot first, so the inner/witness claims come after these.
+pub const NUM_MEM_CLAIMS: usize = 6;
+
 /// The inverse-logup contribution to the batched inner sumcheck's **initial**
 /// claim. The six memory routes prove `0 = Σ ...`, so their combined initial
 /// claim is zero — this exists for symmetry with the Logup-GKR slot's

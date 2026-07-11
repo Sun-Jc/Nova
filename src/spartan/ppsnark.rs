@@ -3,6 +3,13 @@
 //! The verifier in this preprocessing SNARK maintains a commitment to R1CS matrices. This is beneficial when using a
 //! polynomial commitment scheme in which the verifier's costs is succinct.
 //! The SNARK implemented here is described in the MicroNova paper.
+#[cfg(feature = "logup-no-gkr")]
+use crate::spartan::mem_check_logup;
+#[cfg(not(feature = "logup-no-gkr"))]
+use crate::spartan::{
+  mem_check_logup_gkr::{self, MemCheckWitness},
+  polys::multilinear::SparsePolynomial,
+};
 use crate::traits::evm_serde::EvmCompatSerde;
 use crate::{
   digest::{DigestComputer, SimpleDigestible},
@@ -10,12 +17,10 @@ use crate::{
   r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness},
   spartan::{
     math::Math,
-    mem_check_logup,
-    mem_check_logup_gkr::{self, MemCheckWitness},
     polys::{
       eq::EqPolynomial,
       masked_eq::MaskedEqPolynomial,
-      multilinear::{MultilinearPolynomial, SparsePolynomial},
+      multilinear::MultilinearPolynomial,
       univariate::{CompressedUniPoly, UniPoly},
     },
     powers,
@@ -475,11 +480,13 @@ pub struct RelaxedR1CSSNARK<E: Engine, EE: EvaluationEngineTrait<E>> {
   comm_L_row: Commitment<E>,
   comm_L_col: Commitment<E>,
 
-  // Memory-check proof data. Bundled per implementation so the SNARK gates the
-  // whole memory-check behind one field: inverse-logup (feature `logup-no-gkr`)
-  // carries the four inverse-oracle commitments + evals; Logup-GKR (default)
-  // carries the fractional-sum proof + the rerandomize claims.
+  // Memory-check proof data, one field per implementation, feature-gated:
+  // inverse-logup (feature `logup-no-gkr`) carries the four inverse-oracle
+  // commitments + evals; Logup-GKR (default) carries the fractional-sum proof +
+  // the rerandomize claims.
+  #[cfg(feature = "logup-no-gkr")]
   mem_check: mem_check_logup::LogupProofData<E>,
+  #[cfg(not(feature = "logup-no-gkr"))]
   mem_check_gkr: mem_check_logup_gkr::GkrProofData<E>,
 
   // outer sum-check proof
@@ -535,17 +542,21 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
   /// witness, and the Logup-GKR rerandomize instance (L_row/L_col opening-point
   /// reduction). All four share the same size and (reported) degree, so they
   /// fold into one RLC'd sumcheck landing at the shared point `r_inner_batched`.
-  fn prove_helper<T1, T2, T3, T4>(
+  /// Batched inner sum-check prover for three instances: a memory-check slot,
+  /// the inner batched instance, and the witness-bound instance. The
+  /// memory-check slot is either the inverse-logup `MemorySumcheckInstance`
+  /// (feature `logup-no-gkr`) or the Logup-GKR `RerandomizeSumcheckInstance`
+  /// (default) — both are `SumcheckEngine`s of the same size/degree, folded
+  /// into one RLC'd sumcheck landing at the shared point `r_inner_batched`.
+  fn prove_helper<T1, T2, T3>(
     mem: &mut T1,
     inner: &mut T2,
     witness: &mut T3,
-    rerand: &mut T4,
     transcript: &mut E::TE,
   ) -> Result<
     (
       SumcheckProof<E>,
       Vec<E::Scalar>,
-      Vec<Vec<E::Scalar>>,
       Vec<Vec<E::Scalar>>,
       Vec<Vec<E::Scalar>>,
       Vec<Vec<E::Scalar>>,
@@ -556,15 +567,12 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
     T1: SumcheckEngine<E>,
     T2: SumcheckEngine<E>,
     T3: SumcheckEngine<E>,
-    T4: SumcheckEngine<E>,
   {
     // sanity checks
     assert_eq!(mem.size(), inner.size());
     assert_eq!(mem.size(), witness.size());
-    assert_eq!(mem.size(), rerand.size());
     assert_eq!(mem.degree(), inner.degree());
     assert_eq!(mem.degree(), witness.degree());
-    assert_eq!(mem.degree(), rerand.degree());
 
     // these claims are already added to the transcript, so we do not need to add
     let claims = mem
@@ -572,7 +580,6 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
       .into_iter()
       .chain(inner.initial_claims())
       .chain(witness.initial_claims())
-      .chain(rerand.initial_claims())
       .collect::<Vec<E::Scalar>>();
 
     let s = transcript.squeeze(b"r")?;
@@ -586,26 +593,15 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
     let mut cubic_polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::new();
     let num_rounds = mem.size().log_2();
     for _ in 0..num_rounds {
-      let (evals_mem, (evals_inner, (evals_witness, evals_rerand))) = rayon::join(
+      let (evals_mem, (evals_inner, evals_witness)) = rayon::join(
         || mem.evaluation_points(),
-        || {
-          rayon::join(
-            || inner.evaluation_points(),
-            || {
-              rayon::join(
-                || witness.evaluation_points(),
-                || rerand.evaluation_points(),
-              )
-            },
-          )
-        },
+        || rayon::join(|| inner.evaluation_points(), || witness.evaluation_points()),
       );
 
       let evals: Vec<Vec<E::Scalar>> = evals_mem
         .into_iter()
         .chain(evals_inner)
         .chain(evals_witness)
-        .chain(evals_rerand)
         .collect::<Vec<Vec<E::Scalar>>>();
       assert_eq!(evals.len(), claims.len());
 
@@ -631,12 +627,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
 
       let _ = rayon::join(
         || mem.bound(&r_i),
-        || {
-          rayon::join(
-            || inner.bound(&r_i),
-            || rayon::join(|| witness.bound(&r_i), || rerand.bound(&r_i)),
-          )
-        },
+        || rayon::join(|| inner.bound(&r_i), || witness.bound(&r_i)),
       );
 
       e = poly.evaluate(&r_i);
@@ -646,7 +637,6 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
     let mem_claims = mem.final_claims();
     let inner_claims = inner.final_claims();
     let witness_claims = witness.final_claims();
-    let rerand_claims = rerand.final_claims();
 
     Ok((
       SumcheckProof::new(cubic_polys),
@@ -654,7 +644,6 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
       mem_claims,
       inner_claims,
       witness_claims,
-      rerand_claims,
     ))
   }
 }
@@ -843,33 +832,37 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let gamma = transcript.squeeze(b"g")?;
     let r = transcript.squeeze(b"r")?;
 
-    let (mut inner_batched_sc_inst, mem_res) = rayon::join(
-      || {
-        // Inner batched sum-check instance for:
-        // (a) ABC claim: factor·(v_A + c·v_B + c²·v_C) = Σ L_row(y) * (val_A + c·val_B + c²·val_C)(y) * L_col(y)
-        // (b) E claim: factor·eval_E = Σ eq(r_outer_full, y) * E(y)
-        // The claims are scaled by factor because the inner sum-check uses r_outer_full
-        // and eq(r_outer_full, j) = factor · eq(r_outer, j) for j < m.
-        let val = zip_with!(
-          par_iter,
-          (pk.S_repr.val_A, pk.S_repr.val_B, pk.S_repr.val_C),
-          |v_a, v_b, v_c| *v_a + c * *v_b + c * c * *v_c
-        )
-        .collect::<Vec<E::Scalar>>();
+    // Build the inner-batched instance in parallel with the memory-check slot
+    // (both are independent of each other). The inner instance is:
+    // (a) ABC claim: factor·(v_A + c·v_B + c²·v_C) = Σ L_row(y) * (val_A + c·val_B + c²·val_C)(y) * L_col(y)
+    // (b) E claim: factor·eval_E = Σ eq(r_outer_full, y) * E(y)
+    // scaled by factor because the inner sum-check uses r_outer_full.
+    let build_inner = || {
+      let val = zip_with!(
+        par_iter,
+        (pk.S_repr.val_A, pk.S_repr.val_B, pk.S_repr.val_C),
+        |v_a, v_b, v_c| *v_a + c * *v_b + c * c * *v_c
+      )
+      .collect::<Vec<E::Scalar>>();
 
-        InnerBatchedSumcheckInstance::new(
-          factor * (eval_Az_at_r_outer + c * eval_Bz_at_r_outer + c * c * eval_Cz_at_r_outer),
-          L_row.clone(),
-          L_col.clone(),
-          val,
-          factor * eval_E_at_r_outer,
-          r_outer_full.clone(), // eq challenges for factored eq (Gruen)
-          E.clone(),
-        )
-      },
-      || {
-        // Inverse-logup memory sum-check instance to prove L_row/L_col are
-        // well-formed.
+      InnerBatchedSumcheckInstance::new(
+        factor * (eval_Az_at_r_outer + c * eval_Bz_at_r_outer + c * c * eval_Cz_at_r_outer),
+        L_row.clone(),
+        L_col.clone(),
+        val,
+        factor * eval_E_at_r_outer,
+        r_outer_full.clone(), // eq challenges for factored eq (Gruen)
+        E.clone(),
+      )
+    };
+
+    // Memory-check slot (the first prove_helper instance), built alongside the
+    // inner instance. Note: the slot's builder absorbs into the transcript, so it
+    // must be the join branch that owns `&mut transcript`.
+    #[cfg(feature = "logup-no-gkr")]
+    let (mut inner_batched_sc_inst, (mut mem, comm_mem_oracles, mem_oracles)) = {
+      let mem_res = rayon::join(build_inner, || {
+        // Inverse-logup: build the inverse oracles, commit, absorb, squeeze rho.
         mem_check_logup::prove_step::<E>(
           ck,
           r,
@@ -885,67 +878,82 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
           num_rounds_inner,
           &mut transcript,
         )
-      },
-    );
+      });
+      (mem_res.0, mem_res.1?)
+    };
 
-    let (mut mem_sc_inst, comm_mem_oracles, mem_oracles) = mem_res?;
+    #[cfg(not(feature = "logup-no-gkr"))]
+    let (mut inner_batched_sc_inst, (mut mem, gkr_proof_data)) = {
+      // Logup-GKR: fold the four sub-instances into GKR trees and emit the
+      // rerandomize instance carrying the reconcile columns into the inner
+      // sumcheck. Reuses the fingerprint (gamma, r); absorbs BEFORE the inner
+      // sumcheck.
+      // `mem_row`/`mem_col` are not used again on this path, so move them in;
+      // `L_row`/`L_col` are still needed by the inner instance and batch opening,
+      // so they are cloned.
+      let logup_gkr_witness = MemCheckWitness::<E> {
+        mem_row,
+        mem_col,
+        L_row: L_row.clone(),
+        L_col: L_col.clone(),
+        addr_row: pk.S_repr.row.clone(),
+        addr_col: pk.S_repr.col.clone(),
+        ts_row: pk.S_repr.ts_row.clone(),
+        ts_col: pk.S_repr.ts_col.clone(),
+      };
+      let mem_res = rayon::join(build_inner, || {
+        mem_check_logup_gkr::prove_step::<E>(logup_gkr_witness, gamma, r, &mut transcript)
+      });
+      (mem_res.0, mem_res.1?)
+    };
 
     // Witness bound sum-check using r_outer_full as the random evaluation point
     let mut witness_sc_inst =
       WitnessBoundSumcheck::new(r_outer_full.clone(), W.clone(), S.num_vars);
 
-    // Logup-GKR memory-check tree fold: folds the four sub-instances into GKR
-    // proofs and emits the rerandomize instance carrying the reconcile columns
-    // into the inner sumcheck below. Reuses the same fingerprint (gamma, r); the
-    // tree fold absorbs into the transcript here, BEFORE the inner sumcheck.
-    let logup_gkr_witness = MemCheckWitness::<E> {
-      mem_row: mem_row.clone(),
-      mem_col: mem_col.clone(),
-      L_row: L_row.clone(),
-      L_col: L_col.clone(),
-      addr_row: pk.S_repr.row.clone(),
-      addr_col: pk.S_repr.col.clone(),
-      ts_row: pk.S_repr.ts_row.clone(),
-      ts_col: pk.S_repr.ts_col.clone(),
-    };
-    let (mut rerandomize_sc_inst, gkr_proof_data, _gkr_rerand_claims) =
-      mem_check_logup_gkr::prove_step::<E>(logup_gkr_witness, gamma, r, &mut transcript)?;
-
     // -----------------------------------------------------------------------
-    // Step 3: Run the batched inner batched sum-check (4 instances)
+    // Step 3: Run the batched inner sum-check (memory slot + inner + witness)
     // -----------------------------------------------------------------------
-    let (
-      sc_inner_batched,
-      r_inner_batched,
-      claims_mem,
-      claims_inner_batched,
-      claims_witness,
-      claims_rerand,
-    ) = Self::prove_helper(
-      &mut mem_sc_inst,
-      &mut inner_batched_sc_inst,
-      &mut witness_sc_inst,
-      &mut rerandomize_sc_inst,
-      &mut transcript,
-    )?;
+    let (sc_inner_batched, r_inner_batched, claims_mem, claims_inner_batched, claims_witness) =
+      Self::prove_helper(
+        &mut mem,
+        &mut inner_batched_sc_inst,
+        &mut witness_sc_inst,
+        &mut transcript,
+      )?;
 
     // Claims from the inner batched sum-check
     let eval_L_row = claims_inner_batched[0][0];
     let eval_L_col = claims_inner_batched[0][1];
     let eval_E = claims_inner_batched[1][0]; // E(r_inner_batched) — rerandomized to open at same point
 
-    // The rerandomize instance's L_row/L_col at r_inner_batched must equal the
-    // inner ABC path's — they are the same polynomial at the same point.
-    debug_assert_eq!(claims_rerand[0][0], eval_L_row);
-    debug_assert_eq!(claims_rerand[1][0], eval_L_col);
-
-    let eval_t_plus_r_inv_row = claims_mem[0][0];
-    let eval_w_plus_r_inv_row = claims_mem[0][1];
-    let eval_ts_row = claims_mem[0][2];
-
-    let eval_t_plus_r_inv_col = claims_mem[1][0];
-    let eval_w_plus_r_inv_col = claims_mem[1][1];
-    let eval_ts_col = claims_mem[1][2];
+    // ts_row/ts_col at r_inner_batched: from the memory slot's final claims.
+    // Inverse-logup exposes (t+r inv, w+r inv, ts) per row/col; Logup-GKR exposes
+    // the rerandomized columns (ts_row is RERAND index 4, ts_col index 5).
+    #[cfg(feature = "logup-no-gkr")]
+    let (
+      eval_t_plus_r_inv_row,
+      eval_w_plus_r_inv_row,
+      eval_ts_row,
+      eval_t_plus_r_inv_col,
+      eval_w_plus_r_inv_col,
+      eval_ts_col,
+    ) = (
+      claims_mem[0][0],
+      claims_mem[0][1],
+      claims_mem[0][2],
+      claims_mem[1][0],
+      claims_mem[1][1],
+      claims_mem[1][2],
+    );
+    #[cfg(not(feature = "logup-no-gkr"))]
+    let (eval_ts_row, eval_ts_col) = {
+      // The rerandomize slot's L_row/L_col at r_inner_batched must equal the
+      // inner ABC path's — same polynomial, same point.
+      debug_assert_eq!(claims_mem[0][0], eval_L_row);
+      debug_assert_eq!(claims_mem[1][0], eval_L_col);
+      (claims_mem[4][0], claims_mem[5][0])
+    };
     let eval_W = claims_witness[0][0];
 
     // Compute evaluations at r_inner_batched that did not come for free from the sum-check
@@ -963,8 +971,14 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       (e[0], e[1], e[2], e[3], e[4])
     };
 
-    // All evaluations are at r_inner_batched — fold into one claim for batch PCS opening
-    let eval_vec = vec![
+    // All evaluations are at r_inner_batched — fold into one claim for batch PCS
+    // opening. Shared columns come first (both memory-check implementations open
+    // them); the four inverse-oracle columns, present only under inverse-logup,
+    // are appended at the end. The batch is an order-agnostic RLC, so any
+    // ordering is fine as long as prove and verify agree — see the verifier's
+    // matching construction.
+    #[cfg_attr(not(feature = "logup-no-gkr"), allow(unused_mut))]
+    let mut eval_vec = vec![
       eval_W,
       eval_E,
       eval_L_row,
@@ -972,17 +986,13 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       eval_val_A,
       eval_val_B,
       eval_val_C,
-      eval_t_plus_r_inv_row,
       eval_row,
-      eval_w_plus_r_inv_row,
       eval_ts_row,
-      eval_t_plus_r_inv_col,
       eval_col,
-      eval_w_plus_r_inv_col,
       eval_ts_col,
     ];
-
-    let comm_vec = [
+    #[cfg_attr(not(feature = "logup-no-gkr"), allow(unused_mut))]
+    let mut comm_vec = vec![
       U.comm_W,
       U.comm_E,
       comm_L_row,
@@ -990,16 +1000,13 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       pk.S_comm.comm_val_A,
       pk.S_comm.comm_val_B,
       pk.S_comm.comm_val_C,
-      comm_mem_oracles[0],
       pk.S_comm.comm_row,
-      comm_mem_oracles[1],
       pk.S_comm.comm_ts_row,
-      comm_mem_oracles[2],
       pk.S_comm.comm_col,
-      comm_mem_oracles[3],
       pk.S_comm.comm_ts_col,
     ];
-    let poly_vec = [
+    #[cfg_attr(not(feature = "logup-no-gkr"), allow(unused_mut))]
+    let mut poly_vec: Vec<&Vec<E::Scalar>> = vec![
       &W,
       &E,
       &L_row,
@@ -1007,15 +1014,23 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       &pk.S_repr.val_A,
       &pk.S_repr.val_B,
       &pk.S_repr.val_C,
-      mem_oracles[0].as_ref(),
       &pk.S_repr.row,
-      mem_oracles[1].as_ref(),
       &pk.S_repr.ts_row,
-      mem_oracles[2].as_ref(),
       &pk.S_repr.col,
-      mem_oracles[3].as_ref(),
       &pk.S_repr.ts_col,
     ];
+    #[cfg(feature = "logup-no-gkr")]
+    {
+      eval_vec.extend([
+        eval_t_plus_r_inv_row,
+        eval_w_plus_r_inv_row,
+        eval_t_plus_r_inv_col,
+        eval_w_plus_r_inv_col,
+      ]);
+      comm_vec.extend(comm_mem_oracles);
+      poly_vec.extend(mem_oracles.iter());
+    }
+
     transcript.absorb(b"e", &eval_vec.as_slice()); // comm_vec is already in the transcript
     let c = transcript.squeeze(b"c")?;
     let w: PolyEvalWitness<E> = PolyEvalWitness::batch(&poly_vec, &c);
@@ -1036,6 +1051,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       comm_L_row,
       comm_L_col,
 
+      #[cfg(feature = "logup-no-gkr")]
       mem_check: mem_check_logup::LogupProofData {
         comm_t_plus_r_inv_row: comm_mem_oracles[0],
         comm_w_plus_r_inv_row: comm_mem_oracles[1],
@@ -1046,6 +1062,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
         eval_t_plus_r_inv_col,
         eval_w_plus_r_inv_col,
       },
+      #[cfg(not(feature = "logup-no-gkr"))]
       mem_check_gkr: gkr_proof_data,
 
       sc_outer,
@@ -1147,16 +1164,15 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let gamma = transcript.squeeze(b"g")?;
     let r = transcript.squeeze(b"r")?;
 
-    // Inverse-logup memory-check, transcript phase: absorb the inverse-oracle
-    // commitments and squeeze the memory sumcheck's eq randomness `rho`.
+    // Memory-check, transcript phase (before the inner sumcheck's `s`).
+    // Inverse-logup: absorb the inverse-oracle commitments and squeeze the memory
+    // sumcheck's eq randomness `rho`. Logup-GKR: replay the GKR proof, reconcile
+    // the claimed columns against the reduction, run the balance check, and
+    // absorb the claimed values; returns the shared GKR `eval_point`.
+    #[cfg(feature = "logup-no-gkr")]
     let rho =
       mem_check_logup::verify_pre_inner::<E>(&self.mem_check, num_rounds_inner, &mut transcript)?;
-
-    // Logup-GKR memory-check, transcript phase: replay the GKR proof, reconcile
-    // the prover-claimed columns against the reduction, run the balance check,
-    // and absorb the claimed values — all before the inner sumcheck's `s`. The
-    // reconcile/balance are transcript-free algebra; the claimed values are
-    // still bound to the committed columns by the rerandomize sub-claims below.
+    #[cfg(not(feature = "logup-no-gkr"))]
     let gkr_eval_point = mem_check_logup_gkr::verify_pre_inner::<E>(
       &self.mem_check_gkr,
       gamma,
@@ -1165,24 +1181,34 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       &mut transcript,
     )?;
 
-    // 16 claims: 6 memory + 2 inner (ABC + E) + 1 witness + 7 rerandomize.
-    let num_claims = mem_check_logup_gkr::RERAND_BASE + mem_check_logup_gkr::NUM_RERAND_COLUMNS;
+    // Total batched-inner claims: 2 inner (ABC + E) + 1 witness + the
+    // Batched-inner claim layout. `prove_helper` places the memory-check slot
+    // first, so its claims occupy coeffs `[0, MEM_CLAIMS)` and the inner (ABC, E)
+    // and witness claims follow: ABC at `MEM_CLAIMS`, E at `MEM_CLAIMS + 1`,
+    // witness at `MEM_CLAIMS + 2`. MEM_CLAIMS is 6 (inverse-logup) or 7 (GKR).
+    #[cfg(feature = "logup-no-gkr")]
+    let mem_claims = mem_check_logup::NUM_MEM_CLAIMS;
+    #[cfg(not(feature = "logup-no-gkr"))]
+    let mem_claims = mem_check_logup_gkr::NUM_MEM_CLAIMS;
+    let abc_idx = mem_claims;
+    let e_idx = mem_claims + 1;
+    let wit_idx = mem_claims + 2;
+    let num_claims = mem_claims + 3;
     let s = transcript.squeeze(b"r")?;
     let coeffs = powers::<E>(&s, num_claims);
 
     // Compute the combined initial claim. The memory-check slot contributes one
-    // term (`mem_initial`); the ABC/E terms are shared. Under Logup-GKR the slot
-    // term is the rerandomize columns' claimed values (coeffs 9-15); under
-    // inverse-logup it is zero (the six memory routes prove `0 = Σ...`).
-    // Claim 6: inner ABC = factor * (eval_Az + c * eval_Bz + c² * eval_Cz)
-    // Claim 7: inner E = factor * eval_E
-    // Claim 8: witness (zero)
+    // term (`mem_initial`; zero for inverse-logup, the rerandomize columns'
+    // claimed values for Logup-GKR); the ABC/E terms are shared.
     // The factor accounts for zero-padding: eval_P(r_outer_full) = factor * eval_P(r_outer)
     let claim_inner_batched_ABC = factor
       * (self.eval_Az_at_r_outer + c * self.eval_Bz_at_r_outer + c * c * self.eval_Cz_at_r_outer);
+    #[cfg(feature = "logup-no-gkr")]
+    let mem_initial = mem_check_logup::verify_initial_claim::<E>(&coeffs);
+    #[cfg(not(feature = "logup-no-gkr"))]
     let mem_initial = mem_check_logup_gkr::verify_initial_claim::<E>(&self.mem_check_gkr, &coeffs);
-    let claim = coeffs[6] * claim_inner_batched_ABC
-      + coeffs[7] * factor * self.eval_E_at_r_outer
+    let claim = coeffs[abc_idx] * claim_inner_batched_ABC
+      + coeffs[e_idx] * factor * self.eval_E_at_r_outer
       + mem_initial;
 
     // Verify inner batched sum-check
@@ -1198,86 +1224,82 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       let taus_masked_bound_r_inner_batched =
         MaskedEqPolynomial::new(&eq_r_outer, vk.num_vars.log_2()).evaluate(&r_inner_batched);
 
-      // mem_col = z at r_inner_batched, reconstructed from eval_W and public IO.
-      let eval_mem_col_at_r_inner = {
-        let (factor, r_inner_batched_unpad) = {
-          let l = vk.S_comm.N.log_2() - (2 * vk.num_vars).log_2();
-          let mut factor = E::Scalar::ONE;
-          for r_p in r_inner_batched.iter().take(l) {
-            factor *= E::Scalar::ONE - r_p
-          }
-          (factor, r_inner_batched[l..].to_vec())
+      // Memory-check slot's final-claim contribution: inverse-logup's six routes
+      // (coeffs 0-5) or Logup-GKR's seven rerandomize columns (coeffs 9-15).
+      #[cfg(feature = "logup-no-gkr")]
+      let mem_final = {
+        let public_io: Vec<E::Scalar> = vec![U.u].into_iter().chain(U.X.iter().cloned()).collect();
+        mem_check_logup::verify_final_claim::<E>(
+          &self.mem_check,
+          &coeffs,
+          rho,
+          gamma,
+          r,
+          &r_outer_full,
+          &r_inner_batched,
+          num_rounds_inner,
+          vk.num_vars,
+          vk.S_comm.N,
+          self.eval_W,
+          self.eval_L_row,
+          self.eval_L_col,
+          self.eval_row,
+          self.eval_col,
+          self.eval_ts_row,
+          self.eval_ts_col,
+          &public_io,
+        )
+      };
+      #[cfg(not(feature = "logup-no-gkr"))]
+      let mem_final = {
+        // mem_col = z at r_inner_batched, reconstructed from eval_W and public IO.
+        let eval_mem_col_at_r_inner = {
+          let (factor, r_inner_batched_unpad) = {
+            let l = vk.S_comm.N.log_2() - (2 * vk.num_vars).log_2();
+            let mut factor = E::Scalar::ONE;
+            for r_p in r_inner_batched.iter().take(l) {
+              factor *= E::Scalar::ONE - r_p
+            }
+            (factor, r_inner_batched[l..].to_vec())
+          };
+          let eval_X = {
+            let X = vec![U.u]
+              .into_iter()
+              .chain(U.X.iter().cloned())
+              .collect::<Vec<E::Scalar>>();
+            let poly_X = SparsePolynomial::new(r_inner_batched_unpad.len() - 1, X);
+            poly_X.evaluate(&r_inner_batched_unpad[1..])
+          };
+          self.eval_W + factor * r_inner_batched_unpad[0] * eval_X
         };
-        let eval_X = {
-          let X = vec![U.u]
-            .into_iter()
-            .chain(U.X.iter().cloned())
-            .collect::<Vec<E::Scalar>>();
-          let poly_X = SparsePolynomial::new(r_inner_batched_unpad.len() - 1, X);
-          poly_X.evaluate(&r_inner_batched_unpad[1..])
-        };
-        self.eval_W + factor * r_inner_batched_unpad[0] * eval_X
+        let rerand_col_evals = [
+          self.eval_L_row,
+          self.eval_L_col,
+          self.eval_row,
+          self.eval_col,
+          self.eval_ts_row,
+          self.eval_ts_col,
+          eval_mem_col_at_r_inner,
+        ];
+        mem_check_logup_gkr::verify_final_claim::<E>(
+          &coeffs,
+          &gkr_eval_point,
+          &r_inner_batched,
+          &rerand_col_evals,
+        )
       };
 
-      // Inverse-logup memory claims (coeffs 0-5).
-      let public_io: Vec<E::Scalar> = vec![U.u].into_iter().chain(U.X.iter().cloned()).collect();
-      // Memory-check slot's final-claim contribution. Under Logup-GKR it is the
-      // rerandomize columns' claims (coeffs 9-15); under inverse-logup it is the
-      // six memory routes (coeffs 0-5). Both are computed here for now (the two
-      // implementations run alongside each other); a feature gate later selects
-      // one by replacing this single `mem_final` term.
-      let mem_final_logup = mem_check_logup::verify_final_claim::<E>(
-        &self.mem_check,
-        &coeffs,
-        rho,
-        gamma,
-        r,
-        &r_outer_full,
-        &r_inner_batched,
-        num_rounds_inner,
-        vk.num_vars,
-        vk.S_comm.N,
-        self.eval_W,
-        self.eval_L_row,
-        self.eval_L_col,
-        self.eval_row,
-        self.eval_col,
-        self.eval_ts_row,
-        self.eval_ts_col,
-        &public_io,
-      );
-
-      // Inner batched ABC claim (coeff 6): L_row * L_col * (val_A + c·val_B + c²·val_C)
-      let claim_inner_batched_ABC_final = coeffs[6]
+      // Inner batched ABC claim: L_row * L_col * (val_A + c·val_B + c²·val_C)
+      let claim_inner_batched_ABC_final = coeffs[abc_idx]
         * self.eval_L_row
         * self.eval_L_col
         * (self.eval_val_A + c * self.eval_val_B + c * c * self.eval_val_C);
 
-      // Inner batched E claim (coeff 7): eq(r_outer_full, r_inner_batched) * E(r_inner_batched)
-      let claim_inner_batched_E_final = coeffs[7] * eq_r_outer_at_r_inner_batched * self.eval_E;
+      // Inner batched E claim: eq(r_outer_full, r_inner_batched) * E(r_inner_batched)
+      let claim_inner_batched_E_final = coeffs[e_idx] * eq_r_outer_at_r_inner_batched * self.eval_E;
 
-      // Witness claim (coeff 8)
-      let claim_witness_final = coeffs[8] * taus_masked_bound_r_inner_batched * self.eval_W;
-
-      // Logup-GKR rerandomize claims (coeffs 9-15).
-      let rerand_col_evals = [
-        self.eval_L_row,
-        self.eval_L_col,
-        self.eval_row,
-        self.eval_col,
-        self.eval_ts_row,
-        self.eval_ts_col,
-        eval_mem_col_at_r_inner,
-      ];
-      let mem_final_gkr = mem_check_logup_gkr::verify_final_claim::<E>(
-        &coeffs,
-        &gkr_eval_point,
-        &r_inner_batched,
-        &rerand_col_evals,
-      );
-
-      // The memory-check slot's final contribution (both implementations for now).
-      let mem_final = mem_final_logup + mem_final_gkr;
+      // Witness claim
+      let claim_witness_final = coeffs[wit_idx] * taus_masked_bound_r_inner_batched * self.eval_W;
 
       mem_final + claim_inner_batched_ABC_final + claim_inner_batched_E_final + claim_witness_final
     };
@@ -1286,8 +1308,11 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       return Err(NovaError::InvalidSumcheckProof);
     }
 
-    // Verify polynomial openings — all at r_inner_batched
-    let eval_vec = vec![
+    // Verify polynomial openings — all at r_inner_batched. Shared columns first,
+    // the inverse-oracle columns (inverse-logup only) appended at the end. Must
+    // match the prover's column ordering exactly.
+    #[cfg_attr(not(feature = "logup-no-gkr"), allow(unused_mut))]
+    let mut eval_vec = vec![
       self.eval_W,
       self.eval_E,
       self.eval_L_row,
@@ -1295,16 +1320,13 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       self.eval_val_A,
       self.eval_val_B,
       self.eval_val_C,
-      self.mem_check.eval_t_plus_r_inv_row,
       self.eval_row,
-      self.mem_check.eval_w_plus_r_inv_row,
       self.eval_ts_row,
-      self.mem_check.eval_t_plus_r_inv_col,
       self.eval_col,
-      self.mem_check.eval_w_plus_r_inv_col,
       self.eval_ts_col,
     ];
-    let comm_vec = [
+    #[cfg_attr(not(feature = "logup-no-gkr"), allow(unused_mut))]
+    let mut comm_vec = vec![
       U.comm_W,
       U.comm_E,
       self.comm_L_row,
@@ -1312,15 +1334,27 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       vk.S_comm.comm_val_A,
       vk.S_comm.comm_val_B,
       vk.S_comm.comm_val_C,
-      self.mem_check.comm_t_plus_r_inv_row,
       vk.S_comm.comm_row,
-      self.mem_check.comm_w_plus_r_inv_row,
       vk.S_comm.comm_ts_row,
-      self.mem_check.comm_t_plus_r_inv_col,
       vk.S_comm.comm_col,
-      self.mem_check.comm_w_plus_r_inv_col,
       vk.S_comm.comm_ts_col,
     ];
+    #[cfg(feature = "logup-no-gkr")]
+    {
+      eval_vec.extend([
+        self.mem_check.eval_t_plus_r_inv_row,
+        self.mem_check.eval_w_plus_r_inv_row,
+        self.mem_check.eval_t_plus_r_inv_col,
+        self.mem_check.eval_w_plus_r_inv_col,
+      ]);
+      comm_vec.extend([
+        self.mem_check.comm_t_plus_r_inv_row,
+        self.mem_check.comm_w_plus_r_inv_row,
+        self.mem_check.comm_t_plus_r_inv_col,
+        self.mem_check.comm_w_plus_r_inv_col,
+      ]);
+    }
+
     transcript.absorb(b"e", &eval_vec.as_slice()); // comm_vec is already in the transcript
     let c = transcript.squeeze(b"c")?;
     let u: PolyEvalInstance<E> =
