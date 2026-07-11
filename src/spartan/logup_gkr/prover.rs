@@ -31,6 +31,7 @@ use crate::spartan::logup_gkr::proof::{
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::traits::{Engine, TranscriptEngineTrait};
 use ff::Field;
+use rayon::prelude::*;
 
 // The prover satisfies the protocol defined by the verifier: it uses the
 // verifier's transcript labels (`spec`) and fraction-absorb order, and produces
@@ -88,51 +89,64 @@ fn prove_layer_sumcheck<E: Engine>(
     // Evaluate the round polynomial P(t) = Σ_x eq_t(x)·G_t(x) at t = 0,1,2,3,
     // where at parameter t each MLE m contributes m0 + t·(m1 - m0) (m0 = low
     // half, m1 = high half) — the MSB-first bind direction.
-    let mut p = [E::Scalar::ZERO; 4];
-    for x in 0..half {
-      let e0 = eq.Z[x];
-      let e1 = eq.Z[x + half];
-      let e_step = e1 - e0;
-      // per-instance gate contributions, batched by distinct powers of λ:
-      // instance i's numerator gets λ^{2i}, its denominator λ^{2i+1} (matches
-      // the verifier's Horner batching — see verifier.rs).
-      let mut g = [E::Scalar::ZERO; 4];
-      for (i, h) in halves.iter().enumerate() {
-        let nl0 = h.nl.Z[x];
-        let nl1 = h.nl.Z[x + half];
-        let nr0 = h.nr.Z[x];
-        let nr1 = h.nr.Z[x + half];
-        let dl0 = h.dl.Z[x];
-        let dl1 = h.dl.Z[x + half];
-        let dr0 = h.dr.Z[x];
-        let dr1 = h.dr.Z[x + half];
+    //
+    // Per-instance λ-powers (num gets λ^{2i}, den λ^{2i+1}) are hoisted out of
+    // the x-loop, and the sum over x is parallelized (each x is independent; the
+    // per-x [4] contributions reduce by elementwise add).
+    let weights: Vec<(E::Scalar, E::Scalar)> = (0..halves.len())
+      .map(|i| {
         let w_num = lambda.pow_vartime([(2 * i) as u64]);
-        let w_den = w_num * lambda;
-        for (k, &t) in [
-          E::Scalar::ZERO,
-          E::Scalar::ONE,
-          E::Scalar::from(2u64),
-          E::Scalar::from(3u64),
-        ]
-        .iter()
-        .enumerate()
-        {
-          let nl = nl0 + t * (nl1 - nl0);
-          let nr = nr0 + t * (nr1 - nr0);
-          let dl = dl0 + t * (dl1 - dl0);
-          let dr = dr0 + t * (dr1 - dr0);
-          // gate = fraction-add of the two children; batched value =
-          // λ^{2i}·gate.num + λ^{2i+1}·gate.den.
-          let gate = Fraction::new(nl, dl) + Fraction::new(nr, dr);
-          g[k] += w_num * gate.num + w_den * gate.den;
+        (w_num, w_num * lambda)
+      })
+      .collect();
+    let ts = [
+      E::Scalar::ZERO,
+      E::Scalar::ONE,
+      E::Scalar::from(2u64),
+      E::Scalar::from(3u64),
+    ];
+    let p = (0..half)
+      .into_par_iter()
+      .map(|x| {
+        let e0 = eq.Z[x];
+        let e_step = eq.Z[x + half] - e0;
+        // per-instance gate contributions, batched by distinct powers of λ.
+        let mut g = [E::Scalar::ZERO; 4];
+        for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
+          let nl0 = h.nl.Z[x];
+          let nl1 = h.nl.Z[x + half];
+          let nr0 = h.nr.Z[x];
+          let nr1 = h.nr.Z[x + half];
+          let dl0 = h.dl.Z[x];
+          let dl1 = h.dl.Z[x + half];
+          let dr0 = h.dr.Z[x];
+          let dr1 = h.dr.Z[x + half];
+          for (k, &t) in ts.iter().enumerate() {
+            let nl = nl0 + t * (nl1 - nl0);
+            let nr = nr0 + t * (nr1 - nr0);
+            let dl = dl0 + t * (dl1 - dl0);
+            let dr = dr0 + t * (dr1 - dr0);
+            // gate = fraction-add of the two children; batched value =
+            // λ^{2i}·gate.num + λ^{2i+1}·gate.den.
+            let gate = Fraction::new(nl, dl) + Fraction::new(nr, dr);
+            g[k] += w_num * gate.num + w_den * gate.den;
+          }
         }
-      }
-      for k in 0..4 {
-        let t = E::Scalar::from(k as u64);
-        let e = e0 + t * e_step;
-        p[k] += e * g[k];
-      }
-    }
+        let mut px = [E::Scalar::ZERO; 4];
+        for (k, &t) in ts.iter().enumerate() {
+          px[k] = (e0 + t * e_step) * g[k];
+        }
+        px
+      })
+      .reduce(
+        || [E::Scalar::ZERO; 4],
+        |mut acc, px| {
+          for k in 0..4 {
+            acc[k] += px[k];
+          }
+          acc
+        },
+      );
 
     let poly = UniPoly::from_evals(&p);
     transcript.absorb(spec::ROUND_POLY, &poly);
