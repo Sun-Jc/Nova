@@ -62,9 +62,30 @@ use crate::spartan::polys::identity::IdentityPolynomial;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::spartan::sumcheck::eq_sumcheck::EqSumCheckInstance;
 use crate::spartan::sumcheck::{SumcheckEngine, SumcheckProof};
+use crate::traits::evm_serde::EvmCompatSerde;
 use crate::traits::Engine;
 use ff::Field;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+
+/// The Logup-GKR memory-check proof fields carried in the ppSNARK proof: the
+/// fractional-sum proof plus the prover-claimed column values at the GKR
+/// `eval_point` (the rerandomize instance's initial claims, in
+/// [`MemCheckOpenings::rerand_claims`] order). Bundled so the SNARK can gate the
+/// whole GKR path behind one field.
+#[serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct GkrProofData<E: Engine> {
+  /// The GKR fractional-sum proof.
+  pub proof: LogupGkrProof<E>,
+  /// Prover-claimed column values at the GKR `eval_point`, in
+  /// [`MemCheckOpenings::rerand_claims`] order. The verifier reads these;
+  /// reconcile + the inner sumcheck bind them to the real committed columns.
+  #[serde_as(as = "[EvmCompatSerde; NUM_RERAND_COLUMNS]")]
+  pub rerand_claims: [E::Scalar; NUM_RERAND_COLUMNS],
+}
 
 /// Fixed sub-instance count (`row_table, row_access, col_table, col_access`).
 pub const NUM_SUB_INSTANCES: usize = 4;

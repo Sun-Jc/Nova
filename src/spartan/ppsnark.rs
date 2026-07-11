@@ -9,7 +9,6 @@ use crate::{
   errors::NovaError,
   r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness},
   spartan::{
-    logup_gkr::LogupGkrProof,
     math::Math,
     mem_check_logup,
     mem_check_logup_gkr::{self, MemCheckWitness},
@@ -477,22 +476,12 @@ pub struct RelaxedR1CSSNARK<E: Engine, EE: EvaluationEngineTrait<E>> {
   comm_L_row: Commitment<E>,
   comm_L_col: Commitment<E>,
 
-  // commitments to aid the memory checks
-  comm_t_plus_r_inv_row: Commitment<E>,
-  comm_w_plus_r_inv_row: Commitment<E>,
-  comm_t_plus_r_inv_col: Commitment<E>,
-  comm_w_plus_r_inv_col: Commitment<E>,
-
-  // Logup-GKR memory-check proof, run alongside the inverse-logup check above.
-  // Its rerandomize instance carries the 7 reconcile columns into the inner
-  // sumcheck.
-  logup_gkr_proof: LogupGkrProof<E>,
-  // Prover-claimed column values at the GKR eval_point (the rerandomize
-  // instance's initial claims), in MemCheckOpenings::rerand_claims order. The
-  // verifier reads these; reconcile + the inner sumcheck bind them to the real
-  // committed columns.
-  #[serde_as(as = "[EvmCompatSerde; mem_check_logup_gkr::NUM_RERAND_COLUMNS]")]
-  gkr_rerand_claims: [E::Scalar; mem_check_logup_gkr::NUM_RERAND_COLUMNS],
+  // Memory-check proof data. Bundled per implementation so the SNARK gates the
+  // whole memory-check behind one field: inverse-logup (feature `logup-no-gkr`)
+  // carries the four inverse-oracle commitments + evals; Logup-GKR (default)
+  // carries the fractional-sum proof + the rerandomize claims.
+  mem_check: mem_check_logup::LogupProofData<E>,
+  mem_check_gkr: mem_check_logup_gkr::GkrProofData<E>,
 
   // outer sum-check proof
   sc_outer: SumcheckProof<E>,
@@ -527,21 +516,14 @@ pub struct RelaxedR1CSSNARK<E: Engine, EE: EvaluationEngineTrait<E>> {
   #[serde_as(as = "EvmCompatSerde")]
   eval_W: E::Scalar,
 
-  #[serde_as(as = "EvmCompatSerde")]
-  eval_t_plus_r_inv_row: E::Scalar,
+  // Shared address/multiplicity evaluations (both memory-check implementations
+  // open these at the inner point).
   #[serde_as(as = "EvmCompatSerde")]
   eval_row: E::Scalar, // address
   #[serde_as(as = "EvmCompatSerde")]
-  eval_w_plus_r_inv_row: E::Scalar,
-  #[serde_as(as = "EvmCompatSerde")]
   eval_ts_row: E::Scalar,
-
-  #[serde_as(as = "EvmCompatSerde")]
-  eval_t_plus_r_inv_col: E::Scalar,
   #[serde_as(as = "EvmCompatSerde")]
   eval_col: E::Scalar, // address
-  #[serde_as(as = "EvmCompatSerde")]
-  eval_w_plus_r_inv_col: E::Scalar,
   #[serde_as(as = "EvmCompatSerde")]
   eval_ts_col: E::Scalar,
 
@@ -1082,13 +1064,20 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       comm_L_row,
       comm_L_col,
 
-      comm_t_plus_r_inv_row: comm_mem_oracles[0],
-      comm_w_plus_r_inv_row: comm_mem_oracles[1],
-      comm_t_plus_r_inv_col: comm_mem_oracles[2],
-      comm_w_plus_r_inv_col: comm_mem_oracles[3],
-
-      logup_gkr_proof,
-      gkr_rerand_claims,
+      mem_check: mem_check_logup::LogupProofData {
+        comm_t_plus_r_inv_row: comm_mem_oracles[0],
+        comm_w_plus_r_inv_row: comm_mem_oracles[1],
+        comm_t_plus_r_inv_col: comm_mem_oracles[2],
+        comm_w_plus_r_inv_col: comm_mem_oracles[3],
+        eval_t_plus_r_inv_row,
+        eval_w_plus_r_inv_row,
+        eval_t_plus_r_inv_col,
+        eval_w_plus_r_inv_col,
+      },
+      mem_check_gkr: mem_check_logup_gkr::GkrProofData {
+        proof: logup_gkr_proof,
+        rerand_claims: gkr_rerand_claims,
+      },
 
       sc_outer,
 
@@ -1108,14 +1097,9 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
 
       eval_W,
 
-      eval_t_plus_r_inv_row,
       eval_row,
-      eval_w_plus_r_inv_row,
       eval_ts_row,
-
       eval_col,
-      eval_t_plus_r_inv_col,
-      eval_w_plus_r_inv_col,
       eval_ts_col,
 
       eval_arg,
@@ -1197,10 +1181,10 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     transcript.absorb(
       b"l",
       &vec![
-        self.comm_t_plus_r_inv_row,
-        self.comm_w_plus_r_inv_row,
-        self.comm_t_plus_r_inv_col,
-        self.comm_w_plus_r_inv_col,
+        self.mem_check.comm_t_plus_r_inv_row,
+        self.mem_check.comm_w_plus_r_inv_row,
+        self.mem_check.comm_t_plus_r_inv_col,
+        self.mem_check.comm_w_plus_r_inv_col,
       ]
       .as_slice(),
     );
@@ -1219,7 +1203,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     // values are still bound to the real committed columns by the rerandomize
     // sub-claims of the inner sumcheck (that binding is what makes reconcile
     // meaningful). Column order is MemCheckOpenings::rerand_claims.
-    let gkr_rerand_claims = self.gkr_rerand_claims;
+    let gkr_rerand_claims = self.mem_check_gkr.rerand_claims;
     let gkr_openings = mem_check_logup_gkr::MemCheckOpenings::<E> {
       eval_L_row: gkr_rerand_claims[0],
       eval_L_col: gkr_rerand_claims[1],
@@ -1230,7 +1214,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       eval_mem_col: gkr_rerand_claims[6],
     };
     let gkr_eval_point = mem_check_logup_gkr::verify::<E>(
-      &self.logup_gkr_proof,
+      &self.mem_check_gkr.proof,
       gamma,
       r,
       &r_outer_full,
@@ -1335,20 +1319,20 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
 
       // Memory claims (coeffs 0-5)
       let claim_mem_final_expected: E::Scalar = coeffs[0]
-        * (self.eval_t_plus_r_inv_row - self.eval_w_plus_r_inv_row)
-        + coeffs[1] * (self.eval_t_plus_r_inv_col - self.eval_w_plus_r_inv_col)
+        * (self.mem_check.eval_t_plus_r_inv_row - self.mem_check.eval_w_plus_r_inv_row)
+        + coeffs[1] * (self.mem_check.eval_t_plus_r_inv_col - self.mem_check.eval_w_plus_r_inv_col)
         + coeffs[2]
           * (rand_eq_bound_r_inner_batched
-            * (self.eval_t_plus_r_inv_row * eval_t_plus_r_row - self.eval_ts_row))
+            * (self.mem_check.eval_t_plus_r_inv_row * eval_t_plus_r_row - self.eval_ts_row))
         + coeffs[3]
           * (rand_eq_bound_r_inner_batched
-            * (self.eval_w_plus_r_inv_row * eval_w_plus_r_row - E::Scalar::ONE))
+            * (self.mem_check.eval_w_plus_r_inv_row * eval_w_plus_r_row - E::Scalar::ONE))
         + coeffs[4]
           * (rand_eq_bound_r_inner_batched
-            * (self.eval_t_plus_r_inv_col * eval_t_plus_r_col - self.eval_ts_col))
+            * (self.mem_check.eval_t_plus_r_inv_col * eval_t_plus_r_col - self.eval_ts_col))
         + coeffs[5]
           * (rand_eq_bound_r_inner_batched
-            * (self.eval_w_plus_r_inv_col * eval_w_plus_r_col - E::Scalar::ONE));
+            * (self.mem_check.eval_w_plus_r_inv_col * eval_w_plus_r_col - E::Scalar::ONE));
 
       // Inner batched ABC claim (coeff 6): L_row * L_col * (val_A + c·val_B + c²·val_C)
       let claim_inner_batched_ABC_final = coeffs[6]
@@ -1402,13 +1386,13 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       self.eval_val_A,
       self.eval_val_B,
       self.eval_val_C,
-      self.eval_t_plus_r_inv_row,
+      self.mem_check.eval_t_plus_r_inv_row,
       self.eval_row,
-      self.eval_w_plus_r_inv_row,
+      self.mem_check.eval_w_plus_r_inv_row,
       self.eval_ts_row,
-      self.eval_t_plus_r_inv_col,
+      self.mem_check.eval_t_plus_r_inv_col,
       self.eval_col,
-      self.eval_w_plus_r_inv_col,
+      self.mem_check.eval_w_plus_r_inv_col,
       self.eval_ts_col,
     ];
     let comm_vec = [
@@ -1419,13 +1403,13 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       vk.S_comm.comm_val_A,
       vk.S_comm.comm_val_B,
       vk.S_comm.comm_val_C,
-      self.comm_t_plus_r_inv_row,
+      self.mem_check.comm_t_plus_r_inv_row,
       vk.S_comm.comm_row,
-      self.comm_w_plus_r_inv_row,
+      self.mem_check.comm_w_plus_r_inv_row,
       vk.S_comm.comm_ts_row,
-      self.comm_t_plus_r_inv_col,
+      self.mem_check.comm_t_plus_r_inv_col,
       vk.S_comm.comm_col,
-      self.comm_w_plus_r_inv_col,
+      self.mem_check.comm_w_plus_r_inv_col,
       vk.S_comm.comm_ts_col,
     ];
     transcript.absorb(b"e", &eval_vec.as_slice()); // comm_vec is already in the transcript

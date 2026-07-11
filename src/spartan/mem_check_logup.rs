@@ -1,12 +1,13 @@
 //! Inverse-logup memory-check for ppSNARK (the original Microsoft Nova
 //! implementation).
 //!
-//! Selected when the `logup` feature is enabled; otherwise ppSNARK uses the
-//! Logup-GKR memory-check in [`super::mem_check_logup_gkr`]. This module holds
-//! the pieces that are specific to the inverse-logup approach — the
+//! Selected when the `logup-no-gkr` feature is enabled; otherwise ppSNARK uses
+//! the Logup-GKR memory-check in [`super::mem_check_logup_gkr`]. This module
+//! holds the pieces specific to the inverse-logup approach — the
 //! [`MemorySumcheckInstance`] (six-route sumcheck proving
 //! `Σ TS[i]/(T[i]+r) − 1/(W[i]+r) = 0` per row/col via committed inverse
-//! oracles) — so that they can be feature-gated out cleanly.
+//! oracles) and the [`LogupProofData`] bundle of its proof fields — so they can
+//! be feature-gated out of the SNARK cleanly.
 
 use crate::{
   errors::NovaError,
@@ -15,11 +16,43 @@ use crate::{
     polys::multilinear::MultilinearPolynomial,
     sumcheck::{eq_sumcheck::EqSumCheckInstance, SumcheckEngine, SumcheckProof},
   },
-  traits::{commitment::CommitmentEngineTrait, Engine},
+  traits::{commitment::CommitmentEngineTrait, evm_serde::EvmCompatSerde, Engine},
   zip_with, Commitment, CommitmentKey,
 };
 use ff::Field;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+
+/// The inverse-logup memory-check proof fields carried in the ppSNARK proof:
+/// commitments to the four inverse oracles (`1/(T+r)·TS`, `1/(W+r)` for row/col)
+/// and their evaluations at the shared inner point. Bundled so the SNARK can
+/// gate the whole inverse-logup path behind one field.
+#[serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct LogupProofData<E: Engine> {
+  /// Commitment to `TS_row/(T_row+r)`.
+  pub comm_t_plus_r_inv_row: Commitment<E>,
+  /// Commitment to `1/(W_row+r)`.
+  pub comm_w_plus_r_inv_row: Commitment<E>,
+  /// Commitment to `TS_col/(T_col+r)`.
+  pub comm_t_plus_r_inv_col: Commitment<E>,
+  /// Commitment to `1/(W_col+r)`.
+  pub comm_w_plus_r_inv_col: Commitment<E>,
+  /// Evaluation of `TS_row/(T_row+r)` at the inner point.
+  #[serde_as(as = "EvmCompatSerde")]
+  pub eval_t_plus_r_inv_row: E::Scalar,
+  /// Evaluation of `1/(W_row+r)` at the inner point.
+  #[serde_as(as = "EvmCompatSerde")]
+  pub eval_w_plus_r_inv_row: E::Scalar,
+  /// Evaluation of `TS_col/(T_col+r)` at the inner point.
+  #[serde_as(as = "EvmCompatSerde")]
+  pub eval_t_plus_r_inv_col: E::Scalar,
+  /// Evaluation of `1/(W_col+r)` at the inner point.
+  #[serde_as(as = "EvmCompatSerde")]
+  pub eval_w_plus_r_inv_col: E::Scalar,
+}
 
 /// Memory sumcheck instance for PPSNARK LogUp
 pub struct MemorySumcheckInstance<E: Engine> {
