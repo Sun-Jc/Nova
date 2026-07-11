@@ -54,6 +54,7 @@
 
 use crate::errors::NovaError;
 use crate::spartan::logup_gkr::fraction::Fraction;
+use crate::spartan::logup_gkr::layer::Layer;
 use crate::spartan::logup_gkr::proof::LogupGkrProof;
 use crate::spartan::logup_gkr::verifier;
 use crate::spartan::polys::eq::EqPolynomial;
@@ -95,6 +96,132 @@ pub struct MemCheckOpenings<E: Engine> {
   /// `mem_row` is `eq(r_outer_full, ·)`, which the verifier evaluates directly,
   /// so only `mem_col` needs opening.
   pub eval_mem_col: E::Scalar,
+}
+
+/// The raw length-N memory-check columns the prover feeds into Logup-GKR.
+///
+/// These are exactly ppSNARK's padded memory-check columns (all length
+/// `N = 2^{log N}`; see `jcbase/ppsnark-pad-to-N.md`). `build_input_layers`
+/// turns them into the four GKR input layers, and the prover later opens the
+/// subset named by [`MemCheckOpenings`] at the shared point. Field meanings
+/// match the four-sub-instance table in the module docs:
+/// - `mem_row = eq(r_outer_full, ·)`, `mem_col = z` (table values);
+/// - `L_row`/`L_col` the lookup columns, `addr_row = row`/`addr_col = col` the
+///   access addresses, `ts_row`/`ts_col` the multiplicities.
+pub struct MemCheckColumns<E: Engine> {
+  /// Row table values `mem_row = eq(r_outer_full, ·)`.
+  pub mem_row: Vec<E::Scalar>,
+  /// Col table values `mem_col = z`.
+  pub mem_col: Vec<E::Scalar>,
+  /// Row lookup column `L_row`.
+  pub L_row: Vec<E::Scalar>,
+  /// Col lookup column `L_col`.
+  pub L_col: Vec<E::Scalar>,
+  /// Row access addresses `addr_row = row`.
+  pub addr_row: Vec<E::Scalar>,
+  /// Col access addresses `addr_col = col`.
+  pub addr_col: Vec<E::Scalar>,
+  /// Row multiplicities `ts_row`.
+  pub ts_row: Vec<E::Scalar>,
+  /// Col multiplicities `ts_col`.
+  pub ts_col: Vec<E::Scalar>,
+}
+
+/// Builds the four GKR input layers `[row_table, row_access, col_table,
+/// col_access]` from the raw columns and the fingerprint `(gamma, r)`.
+///
+/// This is the prover-side dual of the verifier's per-instance reconstruction
+/// in [`verify`]: it must produce, for every leaf `i`, exactly the fractions the
+/// verifier recomputes at `eval_point`. The layers, in order (matching the
+/// module-doc table and [`NUM_SUB_INSTANCES`]):
+///
+/// | idx | name        | num        | den                         |
+/// |-----|-------------|------------|-----------------------------|
+/// | 0   | row_table   | `ts_row`   | `mem_row·γ + id + r`        |
+/// | 1   | row_access  | `-1`       | `L_row·γ + addr_row + r`    |
+/// | 2   | col_table   | `ts_col`   | `mem_col·γ + id + r`        |
+/// | 3   | col_access  | `-1`       | `L_col·γ + addr_col + r`    |
+///
+/// `id[i] = i` is the cell address. All columns must share one length `N`, a
+/// power of two (`debug_assert`ed); the returned layers each have `log N`
+/// variables, the shared GKR depth.
+pub fn build_input_layers<E: Engine>(
+  cols: &MemCheckColumns<E>,
+  gamma: E::Scalar,
+  r: E::Scalar,
+) -> Vec<Layer<E>> {
+  let n = cols.mem_row.len();
+  debug_assert!(
+    n.is_power_of_two() && n >= 2,
+    "N must be a power of two >= 2"
+  );
+  for col in [
+    &cols.mem_col,
+    &cols.L_row,
+    &cols.L_col,
+    &cols.addr_row,
+    &cols.addr_col,
+    &cols.ts_row,
+    &cols.ts_col,
+  ] {
+    debug_assert_eq!(col.len(), n, "all memory-check columns must share length N");
+  }
+
+  let neg_one = -E::Scalar::ONE;
+  // Table-side den: mem·γ + id + r, where id[i] = i (the cell address).
+  //
+  // `id[i]` is built by per-chunk accumulation instead of `Scalar::from(i)` per
+  // element: each chunk pays ONE `from` for its base index, then walks its cells
+  // with a field `+ ONE`, which is far cheaper than a u64→Montgomery conversion.
+  // The chunks run in parallel (`par_chunks_mut`), so this keeps full width
+  // while dropping N `from`s to `N / chunk_size`.
+  let one = E::Scalar::ONE;
+  let chunk_size = 1 + n / rayon::current_num_threads().max(1);
+  let den_table = |mem: &[E::Scalar]| -> Vec<E::Scalar> {
+    let mut out = vec![E::Scalar::ZERO; n];
+    out
+      .par_chunks_mut(chunk_size)
+      .enumerate()
+      .for_each(|(c, chunk)| {
+        let mut id = E::Scalar::from((c * chunk_size) as u64); // base index of this chunk
+        for (out_i, mem_i) in chunk.iter_mut().zip(&mem[c * chunk_size..]) {
+          *out_i = *mem_i * gamma + id + r;
+          id += one;
+        }
+      });
+    out
+  };
+  // Access-side den: L·γ + addr + r.
+  let den_access = |l: &[E::Scalar], addr: &[E::Scalar]| -> Vec<E::Scalar> {
+    (0..n)
+      .into_par_iter()
+      .map(|i| l[i] * gamma + addr[i] + r)
+      .collect()
+  };
+  let mle = |v: Vec<E::Scalar>| MultilinearPolynomial::new(v);
+
+  vec![
+    // idx 0: row_table
+    Layer::<E> {
+      num: mle(cols.ts_row.clone()),
+      den: mle(den_table(&cols.mem_row)),
+    },
+    // idx 1: row_access
+    Layer::<E> {
+      num: mle(vec![neg_one; n]),
+      den: mle(den_access(&cols.L_row, &cols.addr_row)),
+    },
+    // idx 2: col_table
+    Layer::<E> {
+      num: mle(cols.ts_col.clone()),
+      den: mle(den_table(&cols.mem_col)),
+    },
+    // idx 3: col_access
+    Layer::<E> {
+      num: mle(vec![neg_one; n]),
+      den: mle(den_access(&cols.L_col, &cols.addr_col)),
+    },
+  ]
 }
 
 /// Verifies the ppSNARK memory-check via Logup-GKR.
@@ -352,7 +479,6 @@ mod tests {
   //! trusted here (it has its own round-trip tests); what is under test is the
   //! host reconcile + balance logic this module defines.
   use super::*;
-  use crate::spartan::logup_gkr::layer::Layer;
   use crate::spartan::logup_gkr::prover;
   use crate::spartan::polys::multilinear::MultilinearPolynomial;
   use crate::traits::TranscriptEngineTrait;
@@ -380,63 +506,25 @@ mod tests {
     gamma: Fr,
     r: Fr,
     r_outer_full: Vec<Fr>,
-    // raw N-length columns
-    mem_row: Vec<Fr>,
-    mem_col: Vec<Fr>,
-    l_row: Vec<Fr>,
-    l_col: Vec<Fr>,
-    addr_row: Vec<Fr>,
-    addr_col: Vec<Fr>,
-    ts_row: Vec<Fr>,
-    ts_col: Vec<Fr>,
+    cols: MemCheckColumns<E>,
   }
 
   impl Witness {
-    // Build the four input layers [row_table, row_access, col_table, col_access].
+    // Build the four input layers via the production builder (under test).
     fn layers(&self) -> Vec<Layer<E>> {
-      let n = self.mem_row.len();
-      let id: Vec<Fr> = (0..n).map(|i| Fr::from(i as u64)).collect();
-      let neg1 = -Fr::ONE;
-      let den_table = |mem: &[Fr]| -> Vec<Fr> {
-        (0..n)
-          .map(|i| mem[i] * self.gamma + id[i] + self.r)
-          .collect()
-      };
-      let den_access = |l: &[Fr], addr: &[Fr]| -> Vec<Fr> {
-        (0..n)
-          .map(|i| l[i] * self.gamma + addr[i] + self.r)
-          .collect()
-      };
-      vec![
-        Layer::<E> {
-          num: mle(self.ts_row.clone()),
-          den: mle(den_table(&self.mem_row)),
-        },
-        Layer::<E> {
-          num: mle(vec![neg1; n]),
-          den: mle(den_access(&self.l_row, &self.addr_row)),
-        },
-        Layer::<E> {
-          num: mle(self.ts_col.clone()),
-          den: mle(den_table(&self.mem_col)),
-        },
-        Layer::<E> {
-          num: mle(vec![neg1; n]),
-          den: mle(den_access(&self.l_col, &self.addr_col)),
-        },
-      ]
+      build_input_layers::<E>(&self.cols, self.gamma, self.r)
     }
 
     fn openings(&self, pt: &[Fr]) -> MemCheckOpenings<E> {
       let ev = |v: &[Fr]| mle(v.to_vec()).evaluate(pt);
       MemCheckOpenings {
-        eval_L_row: ev(&self.l_row),
-        eval_L_col: ev(&self.l_col),
-        eval_row: ev(&self.addr_row),
-        eval_col: ev(&self.addr_col),
-        eval_ts_row: ev(&self.ts_row),
-        eval_ts_col: ev(&self.ts_col),
-        eval_mem_col: ev(&self.mem_col),
+        eval_L_row: ev(&self.cols.L_row),
+        eval_L_col: ev(&self.cols.L_col),
+        eval_row: ev(&self.cols.addr_row),
+        eval_col: ev(&self.cols.addr_col),
+        eval_ts_row: ev(&self.cols.ts_row),
+        eval_ts_col: ev(&self.cols.ts_col),
+        eval_mem_col: ev(&self.cols.mem_col),
       }
     }
   }
@@ -454,20 +542,22 @@ mod tests {
     let addr_row: Vec<Fr> = reads.iter().map(|&i| Fr::from(i as u64)).collect();
     let addr_col = addr_row.clone();
     // access lookup value = the table value at the read cell.
-    let l_row: Vec<Fr> = reads.iter().map(|&i| mem_row[i]).collect();
-    let l_col: Vec<Fr> = reads.iter().map(|&i| mem_col[i]).collect();
+    let L_row: Vec<Fr> = reads.iter().map(|&i| mem_row[i]).collect();
+    let L_col: Vec<Fr> = reads.iter().map(|&i| mem_col[i]).collect();
     Witness {
       gamma: Fr::from(3),
       r: Fr::from(9),
       r_outer_full,
-      mem_row,
-      mem_col,
-      l_row,
-      l_col,
-      addr_row,
-      addr_col,
-      ts_row,
-      ts_col,
+      cols: MemCheckColumns {
+        mem_row,
+        mem_col,
+        L_row,
+        L_col,
+        addr_row,
+        addr_col,
+        ts_row,
+        ts_col,
+      },
     }
   }
 
@@ -492,7 +582,7 @@ mod tests {
     // equals Σ 1/(W+r). The GKR proof is still built from the tampered layers,
     // so the balance check (not reconcile) is what fails.
     let mut w = balanced_witness();
-    w.ts_row[0] += Fr::ONE;
+    w.cols.ts_row[0] += Fr::ONE;
     assert!(run(&w).is_err(), "must reject an unbalanced multiplicity");
   }
 
