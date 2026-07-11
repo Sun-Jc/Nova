@@ -595,7 +595,7 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
 mod tests {
   //! End-to-end host-verifier tests. Each builds four N-leaf sub-instances with
   //! a real (frozen) GKR prover, derives the [`MemCheckOpenings`] by evaluating
-  //! the raw columns at the GKR `eval_point`, and checks `mem_check::verify`
+  //! the raw columns at the GKR `eval_point`, and checks `verify`
   //! accepts a balanced witness and rejects a tampered one. The GKR prover is
   //! trusted here (it has its own round-trip tests); what is under test is the
   //! End-to-end tests through the top-level [`prove`]/[`verify`] pair. Each
