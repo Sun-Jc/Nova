@@ -13,10 +13,16 @@ use crate::{
   errors::NovaError,
   spartan::{
     batch_invert,
-    polys::multilinear::MultilinearPolynomial,
+    math::Math,
+    polys::{
+      eq::EqPolynomial, identity::IdentityPolynomial, multilinear::MultilinearPolynomial,
+      multilinear::SparsePolynomial,
+    },
     sumcheck::{eq_sumcheck::EqSumCheckInstance, SumcheckEngine, SumcheckProof},
   },
-  traits::{commitment::CommitmentEngineTrait, evm_serde::EvmCompatSerde, Engine},
+  traits::{
+    commitment::CommitmentEngineTrait, evm_serde::EvmCompatSerde, Engine, TranscriptEngineTrait,
+  },
   zip_with, Commitment, CommitmentKey,
 };
 use ff::Field;
@@ -397,4 +403,150 @@ impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstance<E> {
 
     vec![poly_row_final, poly_col_final]
   }
+}
+
+/// Prover side of the inverse-logup memory-check: builds the inverse oracles,
+/// commits to them, absorbs the commitments, squeezes the `rho` challenges, and
+/// returns the `MemorySumcheckInstance` (the first `prove_helper` slot) plus the
+/// oracle commitments and polynomials (needed later for the batched PCS
+/// opening). `addr_row`/`addr_col` are `S_repr.row`/`col`.
+#[allow(clippy::too_many_arguments)]
+pub fn prove_step<E: Engine>(
+  ck: &CommitmentKey<E>,
+  r: E::Scalar,
+  gamma: E::Scalar,
+  mem_row: &[E::Scalar],
+  addr_row: &[E::Scalar],
+  L_row: &[E::Scalar],
+  ts_row: &[E::Scalar],
+  mem_col: &[E::Scalar],
+  addr_col: &[E::Scalar],
+  L_col: &[E::Scalar],
+  ts_col: &[E::Scalar],
+  num_rounds_inner: usize,
+  transcript: &mut E::TE,
+) -> Result<
+  (
+    MemorySumcheckInstance<E>,
+    [Commitment<E>; 4],
+    [Vec<E::Scalar>; 4],
+  ),
+  NovaError,
+> {
+  let (comm_mem_oracles, mem_oracles, mem_aux) = MemorySumcheckInstance::<E>::compute_oracles(
+    ck, &r, &gamma, mem_row, addr_row, L_row, ts_row, mem_col, addr_col, L_col, ts_col,
+  )?;
+  transcript.absorb(b"l", &comm_mem_oracles.as_slice());
+  let rho = (0..num_rounds_inner)
+    .map(|_| transcript.squeeze(b"r"))
+    .collect::<Result<Vec<_>, NovaError>>()?;
+  let inst = MemorySumcheckInstance::new(
+    mem_oracles.clone(),
+    mem_aux,
+    rho,
+    ts_row.to_vec(),
+    ts_col.to_vec(),
+  );
+  Ok((inst, comm_mem_oracles, mem_oracles))
+}
+
+/// The inverse-logup contribution to the batched inner sumcheck's **initial**
+/// claim. The six memory routes prove `0 = Σ ...`, so their combined initial
+/// claim is zero — this exists for symmetry with the Logup-GKR slot's
+/// `verify_initial_claim`, so the caller adds one memory-check contribution
+/// regardless of which implementation is active.
+pub fn verify_initial_claim<E: Engine>(_coeffs: &[E::Scalar]) -> E::Scalar {
+  E::Scalar::ZERO
+}
+
+/// Verifier side, transcript phase: absorbs the four inverse-oracle commitments
+/// and squeezes the `rho` challenges (the eq randomness for the memory
+/// sumcheck), mirroring [`prove_step`]. Must run before the inner sumcheck's `s`
+/// challenge is drawn.
+pub fn verify_pre_inner<E: Engine>(
+  data: &LogupProofData<E>,
+  num_rounds_inner: usize,
+  transcript: &mut E::TE,
+) -> Result<Vec<E::Scalar>, NovaError> {
+  transcript.absorb(
+    b"l",
+    &vec![
+      data.comm_t_plus_r_inv_row,
+      data.comm_w_plus_r_inv_row,
+      data.comm_t_plus_r_inv_col,
+      data.comm_w_plus_r_inv_col,
+    ]
+    .as_slice(),
+  );
+  (0..num_rounds_inner)
+    .map(|_| transcript.squeeze(b"r"))
+    .collect()
+}
+
+/// Verifier side, final-claim phase: reconstructs the memory-check contribution
+/// to the batched inner sumcheck's final claim — the six routes at coeff indices
+/// `0..6`, proving `Σ TS/(T+r) − 1/(W+r) = 0` and the well-formedness of the
+/// four inverse oracles. `rho` is from [`verify_pre_inner`]; the eval arguments
+/// are the shared evaluations at `r_inner_batched`.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_final_claim<E: Engine>(
+  data: &LogupProofData<E>,
+  coeffs: &[E::Scalar],
+  rho: Vec<E::Scalar>,
+  gamma: E::Scalar,
+  r: E::Scalar,
+  r_outer_full: &[E::Scalar],
+  r_inner_batched: &[E::Scalar],
+  num_rounds_inner: usize,
+  num_vars: usize,
+  n: usize,
+  eval_W: E::Scalar,
+  eval_L_row: E::Scalar,
+  eval_L_col: E::Scalar,
+  eval_row: E::Scalar,
+  eval_col: E::Scalar,
+  eval_ts_row: E::Scalar,
+  eval_ts_col: E::Scalar,
+  x: &[E::Scalar],
+) -> E::Scalar {
+  let rand_eq_bound = EqPolynomial::new(rho).evaluate(r_inner_batched);
+  let eq_r_outer = EqPolynomial::new(r_outer_full.to_vec());
+  let eq_r_outer_at_r_inner = eq_r_outer.evaluate(r_inner_batched);
+
+  // mem_col = z at r_inner_batched, reconstructed from eval_W and public IO.
+  let eval_mem_col_at_r_inner = {
+    let (fac, unpad) = {
+      let l = n.log_2() - (2 * num_vars).log_2();
+      let mut fac = E::Scalar::ONE;
+      for r_p in r_inner_batched.iter().take(l) {
+        fac *= E::Scalar::ONE - r_p
+      }
+      (fac, r_inner_batched[l..].to_vec())
+    };
+    let eval_x = {
+      let poly_x = SparsePolynomial::new(unpad.len() - 1, x.to_vec());
+      poly_x.evaluate(&unpad[1..])
+    };
+    eval_W + fac * unpad[0] * eval_x
+  };
+
+  let eval_t_plus_r_row = {
+    let eval_addr = IdentityPolynomial::new(num_rounds_inner).evaluate(r_inner_batched);
+    eval_addr + gamma * eq_r_outer_at_r_inner + r // mem_row = eq(r_outer_full, ·)
+  };
+  let eval_w_plus_r_row = eval_row + gamma * eval_L_row + r;
+  let eval_t_plus_r_col = {
+    let eval_addr = IdentityPolynomial::new(num_rounds_inner).evaluate(r_inner_batched);
+    eval_addr + gamma * eval_mem_col_at_r_inner + r
+  };
+  let eval_w_plus_r_col = eval_col + gamma * eval_L_col + r;
+
+  coeffs[0] * (data.eval_t_plus_r_inv_row - data.eval_w_plus_r_inv_row)
+    + coeffs[1] * (data.eval_t_plus_r_inv_col - data.eval_w_plus_r_inv_col)
+    + coeffs[2] * (rand_eq_bound * (data.eval_t_plus_r_inv_row * eval_t_plus_r_row - eval_ts_row))
+    + coeffs[3]
+      * (rand_eq_bound * (data.eval_w_plus_r_inv_row * eval_w_plus_r_row - E::Scalar::ONE))
+    + coeffs[4] * (rand_eq_bound * (data.eval_t_plus_r_inv_col * eval_t_plus_r_col - eval_ts_col))
+    + coeffs[5]
+      * (rand_eq_bound * (data.eval_w_plus_r_inv_col * eval_w_plus_r_col - E::Scalar::ONE))
 }

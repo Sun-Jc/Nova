@@ -63,7 +63,7 @@ use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::spartan::sumcheck::eq_sumcheck::EqSumCheckInstance;
 use crate::spartan::sumcheck::{SumcheckEngine, SumcheckProof};
 use crate::traits::evm_serde::EvmCompatSerde;
-use crate::traits::Engine;
+use crate::traits::{Engine, TranscriptEngineTrait};
 use ff::Field;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -386,6 +386,91 @@ pub fn verify<E: Engine>(
   }
 
   Ok(eval_point.to_vec())
+}
+
+/// First rerandomize coeff index in the batched inner sumcheck: memory-check
+/// contributes coeffs `[base, base + NUM_RERAND_COLUMNS)`, after the 2 inner
+/// (ABC, E) and 1 witness claims that occupy 6..9. (Coeffs 0..6 are unused
+/// under Logup-GKR — the inverse-logup path's six memory routes.)
+pub const RERAND_BASE: usize = 9;
+
+/// Prover side of the Logup-GKR memory-check: folds the four sub-instances into
+/// GKR trees, absorbs the claimed column values, and returns the rerandomize
+/// instance (the first `prove_helper` slot), the proof data to store, and the
+/// claimed values (RERAND order) for the inner sumcheck's initial claim.
+pub fn prove_step<E: Engine>(
+  witness: MemCheckWitness<E>,
+  gamma: E::Scalar,
+  r: E::Scalar,
+  transcript: &mut E::TE,
+) -> Result<
+  (
+    RerandomizeSumcheckInstance<E>,
+    GkrProofData<E>,
+    [E::Scalar; NUM_RERAND_COLUMNS],
+  ),
+  NovaError,
+> {
+  let out = prove::<E>(witness, gamma, r, transcript)?;
+  let rerand_claims = out.openings.rerand_claims();
+  // Absorb the claimed column values before the inner sumcheck's `s` so the
+  // verifier binds the same values in the same order.
+  transcript.absorb(b"gkrL", &rerand_claims.as_slice());
+  let data = GkrProofData {
+    proof: out.proof,
+    rerand_claims,
+  };
+  Ok((out.rerandomize, data, rerand_claims))
+}
+
+/// Verifier side, transcript phase: replays the GKR proof, reconciles the
+/// claimed columns against the reduction, runs the balance check, and absorbs
+/// the claimed values — mirroring [`prove_step`]. Returns the shared GKR
+/// `eval_point`. Must run before the inner sumcheck's `s` challenge is drawn.
+pub fn verify_pre_inner<E: Engine>(
+  data: &GkrProofData<E>,
+  gamma: E::Scalar,
+  r: E::Scalar,
+  r_outer_full: &[E::Scalar],
+  transcript: &mut E::TE,
+) -> Result<Vec<E::Scalar>, NovaError> {
+  let c = data.rerand_claims;
+  let openings = MemCheckOpenings::<E> {
+    eval_L_row: c[0],
+    eval_L_col: c[1],
+    eval_row: c[2],
+    eval_col: c[3],
+    eval_ts_row: c[4],
+    eval_ts_col: c[5],
+    eval_mem_col: c[6],
+  };
+  let eval_point = verify::<E>(&data.proof, gamma, r, r_outer_full, &openings, transcript)?;
+  transcript.absorb(b"gkrL", &data.rerand_claims.as_slice());
+  Ok(eval_point)
+}
+
+/// The Logup-GKR contribution to the batched inner sumcheck's **initial** claim:
+/// `Σ_i coeffs[RERAND_BASE + i] · claimed_column_i(eval_point)`.
+pub fn verify_initial_claim<E: Engine>(data: &GkrProofData<E>, coeffs: &[E::Scalar]) -> E::Scalar {
+  (0..NUM_RERAND_COLUMNS)
+    .map(|i| coeffs[RERAND_BASE + i] * data.rerand_claims[i])
+    .sum()
+}
+
+/// The Logup-GKR contribution to the batched inner sumcheck's **final** claim:
+/// `Σ_i coeffs[RERAND_BASE + i] · eq(eval_point, r_inner_batched) ·
+/// column_i(r_inner_batched)`, mirroring the E claim. `rerand_col_evals` are the
+/// seven columns' values at `r_inner_batched` in RERAND order.
+pub fn verify_final_claim<E: Engine>(
+  coeffs: &[E::Scalar],
+  eval_point: &[E::Scalar],
+  r_inner_batched: &[E::Scalar],
+  rerand_col_evals: &[E::Scalar; NUM_RERAND_COLUMNS],
+) -> E::Scalar {
+  let eq_gkr = EqPolynomial::new(eval_point.to_vec()).evaluate(r_inner_batched);
+  (0..NUM_RERAND_COLUMNS)
+    .map(|i| coeffs[RERAND_BASE + i] * eq_gkr * rerand_col_evals[i])
+    .sum()
 }
 
 /// Prover output for the Logup-GKR memory-check, before ppSNARK integration.
