@@ -575,6 +575,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
     assert_eq!(mem.degree(), witness.degree());
 
     // these claims are already added to the transcript, so we do not need to add
+    let num_mem_claims = mem.initial_claims().len();
     let claims = mem
       .initial_claims()
       .into_iter()
@@ -584,6 +585,14 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
 
     let s = transcript.squeeze(b"r")?;
     let coeffs = powers::<E>(&s, claims.len());
+
+    // Let the memory-check slot collapse its equally-shaped claims into a single
+    // random linear combination now that the batch coefficients are known. This
+    // is a no-op for instances that don't override the hook. The slot leads the
+    // batch, so its coefficient slice starts at `coeffs[0] == 1`, keeping the
+    // fused round polynomial byte-identical to the per-column sum (see the trait
+    // doc on `fuse_with_coeffs`).
+    mem.fuse_with_coeffs(&coeffs[..num_mem_claims]);
 
     // compute the joint claim
     let claim = zip_with!((claims.iter(), coeffs.iter()), |c_1, c_2| *c_1 * c_2).sum();
@@ -948,13 +957,22 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     );
     #[cfg(not(feature = "logup-no-gkr"))]
     let (eval_ts_row, eval_ts_col) = {
-      // The rerandomize slot's L_row/L_col at r_inner_batched must equal the
-      // inner ABC path's — same polynomial, same point.
-      debug_assert_eq!(claims_mem[0][0], eval_L_row);
-      debug_assert_eq!(claims_mem[1][0], eval_L_col);
-      (claims_mem[4][0], claims_mem[5][0])
+      // The fused rerandomize slot no longer exposes per-column final claims, so
+      // read ts_row/ts_col directly from the PK columns at r_inner_batched (same
+      // point, same polynomials). L_row/L_col already come from the inner ABC
+      // path above; the fused slot's combined final claim is a linear check the
+      // batched sumcheck already enforces.
+      let e = MultilinearPolynomial::multi_evaluate_with(
+        &[&pk.S_repr.ts_row, &pk.S_repr.ts_col],
+        &r_inner_batched,
+      );
+      (e[0], e[1])
     };
     let eval_W = claims_witness[0][0];
+    // Under Logup-GKR the fused memory slot no longer exposes per-column final
+    // claims; keep the binding alive without a warning.
+    #[cfg(not(feature = "logup-no-gkr"))]
+    let _ = &claims_mem;
 
     // Compute evaluations at r_inner_batched that did not come for free from the sum-check
     let (eval_val_A, eval_val_B, eval_val_C, eval_row, eval_col) = {
