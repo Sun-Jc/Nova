@@ -893,6 +893,147 @@ pub mod eq_sumcheck {
       (s_0, s_leading, s_m1)
     }
 
+    /// Evaluate `eq(tau,X) · Σ_i [ w_num_i·(nL_i·dR_i + nR_i·dL_i) + w_den_i·dL_i·dR_i ](X)`
+    /// for the Logup-GKR layer gate: `m` fractional-add instances, each with four
+    /// child half-MLEs `(nL, nR, dL, dR)` and a `(w_num, w_den)` λ-weight pair.
+    ///
+    /// The inner polynomial is degree 2 in `X` (product of two linear factors),
+    /// so BDDT claim derivation applies: only `t(0)` and `t(inf)` are summed over
+    /// `N`, and `s(-1)` is derived from the claim (2 N-scaling sums, not 3).
+    /// Falls back to a third sum when `tau=0` makes the derivation impossible.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluation_points_logup_gate(
+      &self,
+      nl: &[MultilinearPolynomial<E::Scalar>],
+      nr: &[MultilinearPolynomial<E::Scalar>],
+      dl: &[MultilinearPolynomial<E::Scalar>],
+      dr: &[MultilinearPolynomial<E::Scalar>],
+      weights: &[(E::Scalar, E::Scalar)],
+      claim: E::Scalar,
+    ) -> (E::Scalar, E::Scalar, E::Scalar) {
+      let m = nl.len();
+      assert!(m > 0);
+      assert_eq!(m, nr.len());
+      assert_eq!(m, dl.len());
+      assert_eq!(m, dr.len());
+      assert_eq!(m, weights.len());
+      assert_eq!(nl[0].Z.len() % 2, 0);
+
+      let half_p = nl[0].Z.len() / 2;
+
+      // Per-instance gate value at parameter 0 (t0) and its leading X^2 coeff (t_inf).
+      let gate_0_inf = |id: usize| -> (E::Scalar, E::Scalar) {
+        let mut sum_0 = E::Scalar::ZERO;
+        let mut sum_inf = E::Scalar::ZERO;
+        for i in 0..m {
+          let (w_num, w_den) = weights[i];
+          let nl0 = nl[i].Z[id];
+          let nr0 = nr[i].Z[id];
+          let dl0 = dl[i].Z[id];
+          let dr0 = dr[i].Z[id];
+          let nl_s = nl[i].Z[id + half_p] - nl0;
+          let nr_s = nr[i].Z[id + half_p] - nr0;
+          let dl_s = dl[i].Z[id + half_p] - dl0;
+          let dr_s = dr[i].Z[id + half_p] - dr0;
+          sum_0 += w_num * (nl0 * dr0 + nr0 * dl0) + w_den * (dl0 * dr0);
+          sum_inf += w_num * (nl_s * dr_s + nr_s * dl_s) + w_den * (dl_s * dr_s);
+        }
+        (sum_0, sum_inf)
+      };
+
+      let (t_0, t_inf) = if self.round < self.first_half {
+        let (poly_eq_left, poly_eq_right, second_half, low_mask) = self.poly_eqs_first_half();
+        (0..half_p)
+          .into_par_iter()
+          .map(|id| {
+            let factor = poly_eq_left[id >> second_half] * poly_eq_right[id & low_mask];
+            let (s0, sinf) = gate_0_inf(id);
+            (s0 * factor, sinf * factor)
+          })
+          .reduce(
+            || (E::Scalar::ZERO, E::Scalar::ZERO),
+            |a, b| (a.0 + b.0, a.1 + b.1),
+          )
+      } else {
+        let poly_eq_right = self.poly_eq_right_last_half();
+        (0..half_p)
+          .into_par_iter()
+          .map(|id| {
+            let eq_r = poly_eq_right[id];
+            let (s0, sinf) = gate_0_inf(id);
+            (s0 * eq_r, sinf * eq_r)
+          })
+          .reduce(
+            || (E::Scalar::ZERO, E::Scalar::ZERO),
+            |a, b| (a.0 + b.0, a.1 + b.1),
+          )
+      };
+
+      if let Some(result) = self.derive_from_claim_deg2(t_0, t_inf, claim) {
+        result
+      } else {
+        self.fallback_eval_inf_logup_gate(t_0, t_inf, nl, nr, dl, dr, weights)
+      }
+    }
+
+    /// Fallback for the Logup-GKR gate: compute the eval at -1 via the third
+    /// N-scaling sum when `tau=0` blocks claim derivation.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn fallback_eval_inf_logup_gate(
+      &self,
+      t_0: E::Scalar,
+      t_inf: E::Scalar,
+      nl: &[MultilinearPolynomial<E::Scalar>],
+      nr: &[MultilinearPolynomial<E::Scalar>],
+      dl: &[MultilinearPolynomial<E::Scalar>],
+      dr: &[MultilinearPolynomial<E::Scalar>],
+      weights: &[(E::Scalar, E::Scalar)],
+    ) -> (E::Scalar, E::Scalar, E::Scalar) {
+      let p = self.eval_eq_left;
+      let (eq_0, eq_slope, eq_m1) = self.eq_tau_0_a_inf[self.round - 1];
+      let m = nl.len();
+      let half_p = nl[0].Z.len() / 2;
+
+      let s_0 = eq_0 * p * t_0;
+      let s_leading = eq_slope * p * t_inf;
+
+      // Per-instance gate value at X = -1: m(-1) = 2*m0 - m1 for each child MLE.
+      let gate_m1 = |id: usize| -> E::Scalar {
+        let mut sum = E::Scalar::ZERO;
+        for i in 0..m {
+          let (w_num, w_den) = weights[i];
+          let nl_m1 = nl[i].Z[id].double() - nl[i].Z[id + half_p];
+          let nr_m1 = nr[i].Z[id].double() - nr[i].Z[id + half_p];
+          let dl_m1 = dl[i].Z[id].double() - dl[i].Z[id + half_p];
+          let dr_m1 = dr[i].Z[id].double() - dr[i].Z[id + half_p];
+          sum += w_num * (nl_m1 * dr_m1 + nr_m1 * dl_m1) + w_den * (dl_m1 * dr_m1);
+        }
+        sum
+      };
+
+      let t_m1 = if self.round < self.first_half {
+        let (poly_eq_left, poly_eq_right, second_half, low_mask) = self.poly_eqs_first_half();
+        (0..half_p)
+          .into_par_iter()
+          .map(|id| {
+            let factor = poly_eq_left[id >> second_half] * poly_eq_right[id & low_mask];
+            gate_m1(id) * factor
+          })
+          .reduce(|| E::Scalar::ZERO, |a, b| a + b)
+      } else {
+        let poly_eq_right = self.poly_eq_right_last_half();
+        (0..half_p)
+          .into_par_iter()
+          .map(|id| gate_m1(id) * poly_eq_right[id])
+          .reduce(|| E::Scalar::ZERO, |a, b| a + b)
+      };
+
+      let s_m1 = eq_m1 * p * t_m1;
+      (s_0, s_leading, s_m1)
+    }
+
     /// Evaluate eq(tau,X) * (A*B - C) using 2 N-scaling sums instead of 3
     /// (BDDT, eprint 2025/1117 Section 6.2).
     /// Falls back to computing all 3 sums when tau=0 makes derivation impossible.

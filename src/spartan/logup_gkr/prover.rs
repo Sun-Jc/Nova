@@ -23,14 +23,13 @@
 //! fraction evaluation point of the next layer.
 
 use crate::errors::NovaError;
-use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::logup_gkr::layer::Layer;
 use crate::spartan::logup_gkr::proof::{
   LayerClaim, LayerFinalClaim, LayerSumcheck, LogupGkrOpeningClaim, LogupGkrProof,
 };
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::traits::{Engine, TranscriptEngineTrait};
-use ff::{Field, PrimeField};
+use ff::Field;
 use rayon::prelude::*;
 
 // The prover satisfies the protocol defined by the verifier: it uses the
@@ -39,128 +38,29 @@ use rayon::prelude::*;
 // contract).
 use crate::spartan::logup_gkr::verifier::{absorb_fraction, spec};
 
-/// One instance's four child half-MLEs at a layer: `nL, nR, dL, dR`, each of
-/// length `n` (the halves of the child layer of length `2n`).
-struct Halves<E: Engine> {
-  nl: MultilinearPolynomial<E::Scalar>,
-  nr: MultilinearPolynomial<E::Scalar>,
-  dl: MultilinearPolynomial<E::Scalar>,
-  dr: MultilinearPolynomial<E::Scalar>,
-}
-
-fn compute_eval_gate<Scalar: Field>(
-  nl0: Scalar,
-  nl1: Scalar,
-  nr0: Scalar,
-  nr1: Scalar,
-  dl0: Scalar,
-  dl1: Scalar,
-  dr0: Scalar,
-  dr1: Scalar,
-) -> (Fraction<Scalar>, Fraction<Scalar>, Fraction<Scalar>) {
-  let frac_0 = {
-    let frac_l = Fraction::new(nl0, dl0);
-    let frac_r = Fraction::new(nr0, dr0);
-    frac_l + frac_r
-  };
-
-  let nl_lead = nl1 - nl0;
-  let dl_lead = dl1 - dl0;
-  let nr_lead = nr1 - nr0;
-  let dr_lead = dr1 - dr0;
-
-  let frac_lead = {
-    let frac_l = Fraction::new(nl_lead, dl_lead);
-    let frac_r = Fraction::new(nr_lead, dr_lead);
-    frac_l + frac_r
-  };
-
-  let frac_inf = {
-    let nl_inf = nl0 - nl_lead;
-    let dl_inf = dl0 - dl_lead;
-    let nr_inf = nr0 - nr_lead;
-    let dr_inf = dr0 - dr_lead;
-    let frac_l = Fraction::new(nl_inf, dl_inf);
-    let frac_r = Fraction::new(nr_inf, dr_inf);
-    frac_l + frac_r
-  };
-
-  (frac_0, frac_lead, frac_inf)
-}
-
-/// Accumulate the round-polynomial contributions for x in `start..end`, summed
-/// over every instance. `eq(τ,x)` is shared across instances, so we sum each
-/// instance's λ-weighted gate value first and multiply by `eq` once per x
-/// (rather than once per (x, instance)). `half` is the low/high split offset
-/// into each half-MLE's `Z`.
-fn eval_chunk<E: Engine>(
-  halves: &[Halves<E>],
-  weights: &[(E::Scalar, E::Scalar)],
-  eq_first: &[E::Scalar],
-  eq_last: &[E::Scalar],
-  half: usize,
-  start: usize,
-  end: usize,
-) -> (E::Scalar, E::Scalar, E::Scalar) {
-  let mut coeff_0 = E::Scalar::ZERO;
-  let mut coeff_3 = E::Scalar::ZERO;
-  let mut eval_inf = E::Scalar::ZERO;
-
-  for x in start..end {
-    // Sum the λ-weighted gate contributions of all instances at this x; eq is
-    // a common factor pulled out of the instance loop.
-    let mut s0 = E::Scalar::ZERO;
-    let mut s_lead = E::Scalar::ZERO;
-    let mut s_inf = E::Scalar::ZERO;
-    for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
-      let (frac_0, frac_lead, frac_inf) = compute_eval_gate(
-        h.nl.Z[x],
-        h.nl.Z[x + half],
-        h.nr.Z[x],
-        h.nr.Z[x + half],
-        h.dl.Z[x],
-        h.dl.Z[x + half],
-        h.dr.Z[x],
-        h.dr.Z[x + half],
-      );
-      s0 += fraction_to_claim(frac_0, w_num, w_den);
-      s_lead += fraction_to_claim(frac_lead, w_num, w_den);
-      s_inf += fraction_to_claim(frac_inf, w_num, w_den);
-    }
-
-    let e = eq_first[x];
-    let f = eq_last[x] - e;
-    coeff_0 += s0 * e;
-    coeff_3 += s_lead * f;
-    eval_inf += s_inf * (e - f);
-  }
-
-  (coeff_0, coeff_3, eval_inf)
-}
-
-#[inline(always)]
-fn fraction_to_claim<Scalar: Field>(
-  frac: Fraction<Scalar>,
-  num_weight: Scalar,
-  den_weight: Scalar,
-) -> Scalar {
-  frac.num * num_weight + frac.den * den_weight
-}
-
 /// Transparent cubic sumcheck for one GKR layer, proving
 /// `claim = Σ_x eq(τ, x) · Σ_i [ nLᵢ·dRᵢ + nRᵢ·dLᵢ + λ·dLᵢ·dRᵢ ](x)`
-/// over `num_rounds = |τ|` variables. Unlike `prove_batched_cubic`, the `eq`
-/// factor here is an explicit MLE (`EqPolynomial(τ).evals()`), so the verifier
-/// reconciles the final evaluation as the transparent `eq(τ,r) · G(r)` — the
-/// same shape `prove_cubic_with_three_inputs` uses (ppsnark verify).
+/// over `num_rounds = |τ|` variables.
 ///
-/// Returns the compressed round polynomials, the sumcheck point `r`, and each
-/// instance's `(nL, nR, dL, dR)` evaluated at `r`.
+/// The `eq(τ, ·)` factor is handled by the shared `EqSumCheckInstance`
+/// (Gruen eq-factoring, eprint 2024/108: half-size eq tables + O(1) per-round
+/// bind), and each round polynomial is built from 2 N-scaling sums via BDDT
+/// claim derivation (eprint 2025/1117 §6.2) — `t(0)` and `t(∞)`, with `s(-1)`
+/// derived from the running claim. This matches the verifier's reconciliation
+/// of the final value as the transparent `eq(τ,r) · G(r)`.
+///
+/// The four half-MLEs are passed struct-of-arrays (`nl`/`nr`/`dl`/`dr`, one
+/// entry per instance) so the eq instance can index them directly. Returns the
+/// compressed round polynomials, the sumcheck point `r`, and each instance's
+/// `(nL, nR, dL, dR)` evaluated at `r`.
 #[allow(clippy::type_complexity)]
 fn prove_layer_sumcheck<E: Engine>(
   claim: E::Scalar,
   taus: &[E::Scalar],
-  halves: &mut [Halves<E>],
+  nl: &mut [MultilinearPolynomial<E::Scalar>],
+  nr: &mut [MultilinearPolynomial<E::Scalar>],
+  dl: &mut [MultilinearPolynomial<E::Scalar>],
+  dr: &mut [MultilinearPolynomial<E::Scalar>],
   lambda: E::Scalar,
   transcript: &mut E::TE,
 ) -> Result<
@@ -171,23 +71,23 @@ fn prove_layer_sumcheck<E: Engine>(
   ),
   NovaError,
 > {
-  use crate::spartan::polys::eq::EqPolynomial;
   use crate::spartan::polys::univariate::{CompressedUniPoly, UniPoly};
+  use crate::spartan::sumcheck::eq_sumcheck::EqSumCheckInstance;
 
   let num_rounds = taus.len();
-  let mut eq = MultilinearPolynomial::new(EqPolynomial::new(taus.to_vec()).evals());
+  let m = nl.len();
 
   let mut r: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
   let mut polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::with_capacity(num_rounds);
-  let mut running_claim = claim;
+  let mut claim_per_round = claim;
 
-  // Per-instance λ-powers (num gets λ^{2i}, den λ^{2i+1}) are hoisted out of
-  // the x-loop, and the sum over x is parallelized (each x is independent; the
-  // per-x [4] contributions reduce by elementwise add).
-  // λ^{2i} accumulates by multiplying λ² each step, replacing a per-instance
-  // pow_vartime (O(n·log) field muls) with a single running product (O(n)).
+  let mut eq = EqSumCheckInstance::<E>::new(taus.to_vec());
+
+  // Per-instance λ-powers: instance i's numerator gets λ^{2i}, denominator
+  // λ^{2i+1}. λ^{2i} accumulates by a running product (O(m) muls) instead of
+  // per-instance pow_vartime.
   let mut w_num = E::Scalar::ONE;
-  let weights: Vec<(E::Scalar, E::Scalar)> = (0..halves.len())
+  let weights: Vec<(E::Scalar, E::Scalar)> = (0..m)
     .map(|_| {
       let w_den = w_num * lambda;
       let pair = (w_num, w_den);
@@ -197,61 +97,31 @@ fn prove_layer_sumcheck<E: Engine>(
     .collect();
 
   for _ in 0..num_rounds {
-    let len = eq.len();
-    let half = len / 2;
+    // Round polynomial s(X) = eq(τ,X) · G(X), degree 3. BDDT derivation returns
+    // (s(0), cubic coeff, s(-1)); the verifier reconstructs s(1) = claim - s(0).
+    let (s_0, s_cubic, s_m1) =
+      eq.evaluation_points_logup_gate(nl, nr, dl, dr, &weights, claim_per_round);
 
-    let (eq_first, eq_last) = eq.Z.split_at(half);
-
-    // Evaluate the round polynomial over x in 0..half, summed across all
-    // instances. eq(τ,x) is shared, so eval_chunk sums each instance's
-    // λ-weighted gate value first and multiplies by eq once per x. Split the x
-    // range into chunks (a few per thread for load balancing) and evaluate them
-    // in parallel above the threshold; stay serial below it to avoid rayon
-    // fork/join overhead.
-    const PAR_THRESHOLD: usize = 1 << 16;
-    let (coeff_0, coeff_3, eval_inf) = if half >= PAR_THRESHOLD {
-      let chunk = half.div_ceil(rayon::current_num_threads() * 4).max(1);
-      (0..half)
-        .into_par_iter()
-        .step_by(chunk)
-        .map(|start| {
-          let end = (start + chunk).min(half);
-          eval_chunk(halves, &weights, eq_first, eq_last, half, start, end)
-        })
-        .reduce(
-          || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
-          |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
-        )
-    } else {
-      eval_chunk(halves, &weights, eq_first, eq_last, half, 0, half)
-    };
-
-    let coeff_0123 = running_claim - coeff_0;
-    let coeff_1 = (coeff_0123 - eval_inf) * E::Scalar::TWO_INV - coeff_3;
-    let coeff_2 = coeff_0123 - coeff_0 - coeff_1 - coeff_3;
-
-    let poly = UniPoly::from_coeffs(vec![coeff_0, coeff_1, coeff_2, coeff_3]).unwrap();
+    let poly = UniPoly::from_evals_deg3(&[s_0, claim_per_round - s_0, s_cubic, s_m1]);
 
     transcript.absorb(spec::ROUND_POLY, &poly);
     let r_i = transcript.squeeze(spec::ROUND_CHALLENGE)?;
     r.push(r_i);
     polys.push(poly.compress());
-    running_claim = poly.evaluate(&r_i);
+    claim_per_round = poly.evaluate(&r_i);
 
-    // Bind the top variable of eq and every half-MLE.
-    eq.bind_poly_var_top(&r_i);
-    for h in halves.iter_mut() {
-      h.nl.bind_poly_var_top(&r_i);
-      h.nr.bind_poly_var_top(&r_i);
-      h.dl.bind_poly_var_top(&r_i);
-      h.dr.bind_poly_var_top(&r_i);
-    }
+    // Bind the top variable of every half-MLE (eq binds in O(1) via the instance).
+    nl.par_iter_mut()
+      .chain(nr.par_iter_mut())
+      .chain(dl.par_iter_mut())
+      .chain(dr.par_iter_mut())
+      .for_each(|p| p.bind_poly_var_top(&r_i));
+    eq.bound(&r_i);
   }
 
-  let _ = running_claim;
-  let finals: Vec<[E::Scalar; 4]> = halves
-    .iter()
-    .map(|h| [h.nl.Z[0], h.nr.Z[0], h.dl.Z[0], h.dr.Z[0]])
+  let _ = claim_per_round;
+  let finals: Vec<[E::Scalar; 4]> = (0..m)
+    .map(|i| [nl[i].Z[0], nr[i].Z[0], dl[i].Z[0], dr[i].Z[0]])
     .collect();
   Ok((polys, r, finals))
 }
@@ -351,19 +221,29 @@ pub fn prove<E: Engine>(
         acc
       };
 
-      let mut halves: Vec<Halves<E>> = Vec::with_capacity(m);
+      // Half-MLEs struct-of-arrays: nL/nR = numerator halves, dL/dR = den halves.
+      let mut nl: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
+      let mut nr: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
+      let mut dl: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
+      let mut dr: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
       for i in 0..m {
         let c = child(i);
-        halves.push(Halves {
-          nl: MultilinearPolynomial::new(c.num.Z[..n].to_vec()),
-          nr: MultilinearPolynomial::new(c.num.Z[n..child_len].to_vec()),
-          dl: MultilinearPolynomial::new(c.den.Z[..n].to_vec()),
-          dr: MultilinearPolynomial::new(c.den.Z[n..child_len].to_vec()),
-        });
+        nl.push(MultilinearPolynomial::new(c.num.Z[..n].to_vec()));
+        nr.push(MultilinearPolynomial::new(c.num.Z[n..child_len].to_vec()));
+        dl.push(MultilinearPolynomial::new(c.den.Z[..n].to_vec()));
+        dr.push(MultilinearPolynomial::new(c.den.Z[n..child_len].to_vec()));
       }
 
-      let (round_polys, r, finals) =
-        prove_layer_sumcheck::<E>(claim, &eval_point, &mut halves, lambda, transcript)?;
+      let (round_polys, r, finals) = prove_layer_sumcheck::<E>(
+        claim,
+        &eval_point,
+        &mut nl,
+        &mut nr,
+        &mut dl,
+        &mut dr,
+        lambda,
+        transcript,
+      )?;
 
       for f in &finals {
         layer_finals.push(LayerFinalClaim::<E>::new(f[0], f[1], f[2], f[3]));
