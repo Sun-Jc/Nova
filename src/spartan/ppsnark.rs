@@ -736,6 +736,20 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     U: &RelaxedR1CSInstance<E>,
     W: &RelaxedR1CSWitness<E>,
   ) -> Result<Self, NovaError> {
+    // Phase-boundary marker for the `phase-profile` bench harness. No-op unless
+    // the feature is enabled and a hook is installed.
+    #[cfg(feature = "phase-profile")]
+    macro_rules! phase {
+      ($l:expr) => {
+        crate::spartan::phase_profile::mark($l)
+      };
+    }
+    #[cfg(not(feature = "phase-profile"))]
+    macro_rules! phase {
+      ($l:expr) => {};
+    }
+    phase!("start");
+
     // pad the R1CSShape
     let S = S.pad();
     // sanity check that R1CSShape has all required size characteristics
@@ -800,6 +814,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     drop(poly_Bz);
     drop(poly_uCz_E);
     drop(Cz);
+    phase!("outer_sc");
 
     // Absorb outer sum-check claims into transcript
     transcript.absorb(
@@ -844,6 +859,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     // L_row(i) = eq(r_outer_full, row(i)) for all i
     // L_col(i) = z(col(i)) for all i, where z is the full satisfying assignment
     let (mem_row, mem_col, L_row, L_col) = pk.S_repr.evaluation_oracles(&S, &r_outer_full, &z);
+    phase!("eval_oracles");
     // After the evaluation oracles are built, the local padded shape `S`
     // and the assignment `z` are no longer used (only `S.num_vars` is needed
     // later, saved above). Dropping `S` also frees the three sparse matrices and
@@ -861,6 +877,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
 
     // Absorb commitments to L_row and L_col
     transcript.absorb(b"e", &vec![comm_L_row, comm_L_col].as_slice());
+    phase!("commit_L");
 
     // Squeeze challenge for batching inner batched ABC claims
     let c = transcript.squeeze(b"c")?;
@@ -943,9 +960,11 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       });
       (mem_res.0, mem_res.1?)
     };
+    phase!("mem_check");
 
     // Witness bound sum-check using r_outer_full as the random evaluation point
     let mut witness_sc_inst = WitnessBoundSumcheck::new(r_outer_full.clone(), W.clone(), num_vars);
+    phase!("witness_bound");
 
     // -----------------------------------------------------------------------
     // Step 3: Run the batched inner sum-check (memory slot + inner + witness)
@@ -957,6 +976,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
         &mut witness_sc_inst,
         &mut transcript,
       )?;
+    phase!("inner_batch");
 
     // Claims from the inner batched sum-check
     let eval_L_row = claims_inner_batched[0][0];
@@ -1081,6 +1101,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let w: PolyEvalWitness<E> = PolyEvalWitness::batch(&poly_vec, &c);
     let u: PolyEvalInstance<E> =
       PolyEvalInstance::batch(&comm_vec, &r_inner_batched, &eval_vec, &c);
+    phase!("final_evals");
 
     let eval_arg = EE::prove(
       ck,
@@ -1091,6 +1112,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       &r_inner_batched,
       &u.e,
     )?;
+    phase!("open");
 
     Ok(RelaxedR1CSSNARK {
       comm_L_row,

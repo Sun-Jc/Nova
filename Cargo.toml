@@ -55,6 +55,7 @@ rand = "0.8.5"
 expect-test = "1.5.1"
 reqwest = { version = "0.12", features = ["blocking"] }
 serde_json = "1.0"
+libc = "0.2"
 
 [[bench]]
 name = "recursive-snark"
@@ -71,6 +72,11 @@ harness = false
 [[bench]]
 name = "ppsnark"
 harness = false
+
+[[bench]]
+name = "ppsnark_phases"
+harness = false
+required-features = ["phase-profile"]
 
 [[bench]]
 name = "commit"
@@ -97,5 +103,7 @@ io = []
 # Use the original inverse-logup memory-check in ppSNARK instead of Logup-GKR.
 # Default (feature off) uses the Logup-GKR memory-check.
 logup-no-gkr = []
+# Enables a lightweight phase-timing hook inside `ppsnark::prove` for profiling.
+phase-profile = []
 # Enables insecure setup methods that generate random tau. Only for testing!
 test-utils = []

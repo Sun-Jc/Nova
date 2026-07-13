@@ -9,6 +9,10 @@ pub mod direct;
 pub mod logup_gkr;
 pub mod mem_check_logup;
 pub mod mem_check_logup_gkr;
+/// Lightweight phase-timing hook for profiling `ppsnark::prove` (feature
+/// `phase-profile`).
+#[cfg(feature = "phase-profile")]
+pub mod phase_profile;
 pub mod ppsnark;
 pub mod snark;
 
