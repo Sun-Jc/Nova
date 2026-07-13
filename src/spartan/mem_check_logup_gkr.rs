@@ -610,6 +610,24 @@ pub struct RerandomizeSumcheckInstance<E: Engine> {
   running_claims: Vec<E::Scalar>,
   /// Saved `[p(0), 0, p(-1)]` per column, used by [`Self::bound`].
   saved_evals: Vec<[E::Scalar; 3]>,
+  /// Set by [`SumcheckEngine::fuse_with_coeffs`]. Once the batch coefficients are
+  /// known, the seven columns collapse into one random linear combination so the
+  /// prover scans and binds a single polynomial per round instead of seven. The
+  /// per-round output is still reported as seven triples (the combined triple in
+  /// slot 0, zeros elsewhere), so the batched prover's positional
+  /// `Σ coeffs[i]·evals[i]` stays byte-identical to the unfused per-column sum.
+  fused: Option<FusedRerandomize<E>>,
+}
+
+/// Fused single-column state for [`RerandomizeSumcheckInstance`]. Holds the
+/// coefficient-weighted combination of all columns and its running claim.
+struct FusedRerandomize<E: Engine> {
+  /// `Σ_i coeffs[i] · column_i`, bound in lockstep with `eq_sumcheck`.
+  poly: MultilinearPolynomial<E::Scalar>,
+  /// `Σ_i coeffs[i] · claim_i`, the running claim of the combined column.
+  running_claim: E::Scalar,
+  /// Saved `[p(0), 0, p(-1)]` of the combined column for [`Self::bound`].
+  saved: [E::Scalar; 3],
 }
 
 impl<E: Engine> RerandomizeSumcheckInstance<E> {
@@ -633,6 +651,7 @@ impl<E: Engine> RerandomizeSumcheckInstance<E> {
         .collect(),
       running_claims: claims,
       saved_evals,
+      fused: None,
     }
   }
 }
@@ -654,9 +673,54 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
     n
   }
 
+  fn fuse_with_coeffs(&mut self, coeffs: &[E::Scalar]) {
+    assert_eq!(coeffs.len(), self.polys.len());
+    // Collapse the columns into `Σ_i coeffs[i] · column_i` and the claims into
+    // `Σ_i coeffs[i] · claim_i`. Both the BDDT derivation and the N-scaling sum
+    // that feed `evaluation_points_quadratic_with_one_input` are linear in
+    // `(column, claim)`, so evaluating the combined column at the combined claim
+    // equals summing the per-column triples — this makes the fused prover's
+    // per-round message byte-identical to the unfused one.
+    let n = self.polys[0].len();
+    let mut combined = vec![E::Scalar::ZERO; n];
+    combined.par_iter_mut().enumerate().for_each(|(idx, out)| {
+      *out = self
+        .polys
+        .iter()
+        .zip(coeffs.iter())
+        .map(|(poly, &c)| c * poly[idx])
+        .sum();
+    });
+    let running_claim = self
+      .running_claims
+      .iter()
+      .zip(coeffs.iter())
+      .map(|(&claim, &c)| c * claim)
+      .sum();
+    self.fused = Some(FusedRerandomize {
+      poly: MultilinearPolynomial::new(combined),
+      running_claim,
+      saved: [E::Scalar::ZERO; 3],
+    });
+  }
+
   fn evaluation_points(&mut self) -> Vec<Vec<E::Scalar>> {
     // Each column is one quadratic `eq(eval_point, ·) · X(·)`, sampled the same
     // way as the E-claim. The cubic coefficient is zero (degree 2).
+    if let Some(fused) = self.fused.as_mut() {
+      // Fused: evaluate the single combined column, report its triple in slot 0
+      // and zeros elsewhere. `prove_helper` computes `Σ coeffs[i]·evals[i]`; with
+      // coeffs[0] == 1 (the slot leads the batch) this equals the combined triple
+      // — identical to summing the seven per-column triples.
+      let (e0, _, einf) = self
+        .eq_sumcheck
+        .evaluation_points_quadratic_with_one_input(&fused.poly, fused.running_claim);
+      fused.saved = [e0, E::Scalar::ZERO, einf];
+      let mut out = vec![vec![E::Scalar::ZERO; 3]; self.polys.len()];
+      out[0] = vec![e0, E::Scalar::ZERO, einf];
+      return out;
+    }
+
     let evals: Vec<[E::Scalar; 3]> = self
       .polys
       .par_iter_mut()
@@ -674,6 +738,13 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
   }
 
   fn bound(&mut self, r: &E::Scalar) {
+    if let Some(fused) = self.fused.as_mut() {
+      fused.running_claim = SumcheckProof::<E>::update_claim(fused.running_claim, &fused.saved, r);
+      fused.poly.bind_poly_var_top(r);
+      self.eq_sumcheck.bound(r);
+      return;
+    }
+
     self.running_claims = self
       .running_claims
       .iter()
@@ -690,6 +761,12 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
   }
 
   fn final_claims(&self) -> Vec<Vec<E::Scalar>> {
+    // Fused: only the combined column survives; the ppSNARK GKR path reads
+    // ts_row/ts_col directly from the PK columns rather than from here. Return the
+    // combined final in slot 0 for symmetry.
+    if let Some(fused) = self.fused.as_ref() {
+      return vec![vec![fused.poly[0]]];
+    }
     self.polys.iter().map(|p| vec![p[0]]).collect()
   }
 }
