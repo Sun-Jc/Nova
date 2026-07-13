@@ -48,6 +48,30 @@ struct Halves<E: Engine> {
   dr: MultilinearPolynomial<E::Scalar>,
 }
 
+// Returns: (n0, d0, n_lead, d_lead)
+fn compute_eval_gate<Scalar: Field>(
+  nl0: Scalar,
+  nl1: Scalar,
+  nr0: Scalar,
+  nr1: Scalar,
+  dl0: Scalar,
+  dl1: Scalar,
+  dr0: Scalar,
+  dr1: Scalar,
+) -> ((Scalar, Scalar), (Scalar, Scalar)) {
+  let n0 = nl0 * dr0 + nr0 * dl0;
+  let d0 = dl0 * dr0;
+
+  let nl_lead = nl1 - nl0;
+  let dr_lead = dr1 - dr0;
+  let nr_lead = nr1 - nr0;
+  let dl_lead = dl1 - dl0;
+  let n_lead = nl_lead * dr_lead + nr_lead * dl_lead;
+  let d_lead = dl_lead * dr_lead;
+
+  ((n0, d0), (n_lead, d_lead))
+}
+
 /// Transparent cubic sumcheck for one GKR layer, proving
 /// `claim = Σ_x eq(τ, x) · Σ_i [ nLᵢ·dRᵢ + nRᵢ·dLᵢ + λ·dLᵢ·dRᵢ ](x)`
 /// over `num_rounds = |τ|` variables. Unlike `prove_batched_cubic`, the `eq`
@@ -80,25 +104,89 @@ fn prove_layer_sumcheck<E: Engine>(
 
   let mut r: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
   let mut polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::with_capacity(num_rounds);
-  let mut claim_per_round = claim;
+  let mut running_claim = claim;
+
+  // Per-instance λ-powers (num gets λ^{2i}, den λ^{2i+1}) are hoisted out of
+  // the x-loop, and the sum over x is parallelized (each x is independent; the
+  // per-x [4] contributions reduce by elementwise add).
+  // λ^{2i} accumulates by multiplying λ² each step, replacing a per-instance
+  // pow_vartime (O(n·log) field muls) with a single running product (O(n)).
+  let mut w_num = E::Scalar::ONE;
+  let weights: Vec<(E::Scalar, E::Scalar)> = (0..halves.len())
+    .map(|_| {
+      let w_den = w_num * lambda;
+      let pair = (w_num, w_den);
+      w_num = w_den * lambda;
+      pair
+    })
+    .collect();
 
   for _ in 0..num_rounds {
     let len = eq.len();
     let half = len / 2;
 
+    let mut acc_0 = E::Scalar::ZERO;
+    let mut acc_lead = E::Scalar::ZERO;
+
+    let (eq_first, eq_last) = eq.Z.split_at(half);
+
+    let mut e = E::Scalar::ZERO;
+    let mut f = E::Scalar::ZERO;
+    for (eq0, eq1) in eq_first.iter().zip(eq_last.iter()) {
+      e += *eq0;
+      f += *eq1 - *eq0;
+    }
+
+    for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
+      let (nl_first, nl_last) = h.nl.Z.split_at(half);
+      let (dl_first, dl_last) = h.dl.Z.split_at(half);
+      let (nr_first, nr_last) = h.nr.Z.split_at(half);
+      let (dr_first, dr_last) = h.dr.Z.split_at(half);
+
+      for (((((((nl0, dl0), nr0), dr0), nl1), dl1), nr1), dr1) in nl_first
+        .iter()
+        .zip(dl_first.iter())
+        .zip(nr_first.iter())
+        .zip(dr_first.iter())
+        .zip(nl_last.iter())
+        .zip(dl_last.iter())
+        .zip(nr_last.iter())
+        .zip(dr_last.iter())
+      {
+        let ((n0, d0), (n_lead, d_lead)) =
+          compute_eval_gate(*nl0, *nl1, *nr0, *nr1, *dl0, *dl1, *dr0, *dr1);
+
+        acc_0 += n0 * w_num + d0 * w_den;
+        acc_lead += n_lead * w_num + d_lead * w_den;
+      }
+    }
+    // (E + F x) * (A x^2 + B x + C)
+    let c = acc_0;
+    let a = acc_lead;
+    let full_eval_1 = running_claim - c * e;
+    let b = full_eval_1 * (f + e).invert().unwrap() - a - c;
+
+    let coeff_3 = a * f;
+    let coeff_2 = b * f + a * e;
+    let coeff_1 = f * c + e * b;
+    let coeff_0 = c * e;
+    let uni_poly = UniPoly::from_coeffs(vec![coeff_0, coeff_1, coeff_2, coeff_3]).unwrap();
+
+    // x3: A * F
+    // x2: B F + A E
+    // x: F C + E B
+    // 1: C E
+
+    // A, C, E, F
+    // B?
+    // (E + F)  ( A + B + C ) = K
+    // B = K / (E + F) - A - C
+
     // Evaluate the round polynomial P(t) = Σ_x eq_t(x)·G_t(x) at t = 0,1,2,3,
     // where at parameter t each MLE m contributes m0 + t·(m1 - m0) (m0 = low
     // half, m1 = high half) — the MSB-first bind direction.
     //
-    // Per-instance λ-powers (num gets λ^{2i}, den λ^{2i+1}) are hoisted out of
-    // the x-loop, and the sum over x is parallelized (each x is independent; the
-    // per-x [4] contributions reduce by elementwise add).
-    let weights: Vec<(E::Scalar, E::Scalar)> = (0..halves.len())
-      .map(|i| {
-        let w_num = lambda.pow_vartime([(2 * i) as u64]);
-        (w_num, w_num * lambda)
-      })
-      .collect();
+
     let ts = [
       E::Scalar::ZERO,
       E::Scalar::ONE,
@@ -121,6 +209,9 @@ fn prove_layer_sumcheck<E: Engine>(
           let dl1 = h.dl.Z[x + half];
           let dr0 = h.dr.Z[x];
           let dr1 = h.dr.Z[x + half];
+
+          let mut g_tmp = [E::Scalar::ZERO; 4];
+
           for (k, &t) in ts.iter().enumerate() {
             let nl = nl0 + t * (nl1 - nl0);
             let nr = nr0 + t * (nr1 - nr0);
@@ -130,6 +221,34 @@ fn prove_layer_sumcheck<E: Engine>(
             // λ^{2i}·gate.num + λ^{2i+1}·gate.den.
             let gate = Fraction::new(nl, dl) + Fraction::new(nr, dr);
             g[k] += w_num * gate.num + w_den * gate.den;
+
+            g_tmp[k] = w_num * gate.num + w_den * gate.den;
+          }
+
+          {
+            let nl_delta = nl1 - nl0;
+            let nr_delta = nr1 - nr0;
+            let dl_delta = dl1 - dl0;
+            let dr_delta = dr1 - dr0;
+            let nl2 = nl1 + nl_delta;
+            let nl3 = nl2 + nl_delta;
+            let nr2 = nr1 + nr_delta;
+            let nr3 = nr2 + nr_delta;
+            let dl2 = dl1 + dl_delta;
+            let dl3 = dl2 + dl_delta;
+            let dr2 = dr1 + dr_delta;
+            let dr3 = dr2 + dr_delta;
+            let mut f_rec: Vec<Fraction<E::Scalar>> = Vec::with_capacity(4);
+            f_rec.push(Fraction::new(nl0, dl0) + Fraction::new(nr0, dr0));
+            f_rec.push(Fraction::new(nl1, dl1) + Fraction::new(nr1, dr1));
+            f_rec.push(Fraction::new(nl2, dl2) + Fraction::new(nr2, dr2));
+            f_rec.push(Fraction::new(nl3, dl3) + Fraction::new(nr3, dr3));
+            let mut g_rec = [E::Scalar::ZERO; 4];
+            g_rec[0] = f_rec[0].num * w_num + f_rec[0].den * w_den;
+            g_rec[1] = f_rec[1].num * w_num + f_rec[1].den * w_den;
+            g_rec[2] = f_rec[2].num * w_num + f_rec[2].den * w_den;
+            g_rec[3] = f_rec[3].num * w_num + f_rec[3].den * w_den;
+            assert_eq!(g_rec, g_tmp);
           }
         }
         let mut px = [E::Scalar::ZERO; 4];
@@ -149,11 +268,16 @@ fn prove_layer_sumcheck<E: Engine>(
       );
 
     let poly = UniPoly::from_evals(&p);
+
+    {
+      assert_eq!(poly, uni_poly);
+    }
+
     transcript.absorb(spec::ROUND_POLY, &poly);
     let r_i = transcript.squeeze(spec::ROUND_CHALLENGE)?;
     r.push(r_i);
     polys.push(poly.compress());
-    claim_per_round = poly.evaluate(&r_i);
+    running_claim = poly.evaluate(&r_i);
 
     // Bind the top variable of eq and every half-MLE.
     eq.bind_poly_var_top(&r_i);
@@ -165,7 +289,7 @@ fn prove_layer_sumcheck<E: Engine>(
     }
   }
 
-  let _ = claim_per_round;
+  let _ = running_claim;
   let finals: Vec<[E::Scalar; 4]> = halves
     .iter()
     .map(|h| [h.nl.Z[0], h.nr.Z[0], h.dl.Z[0], h.dr.Z[0]])
