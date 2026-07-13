@@ -30,6 +30,21 @@ pub trait SumcheckEngine<E: Engine>: Send + Sync {
   /// For degree-2 (quadratic) claims: [p(0), 0, p(-1)]
   fn evaluation_points(&mut self) -> Vec<Vec<E::Scalar>>;
 
+  /// Optional hook: once the batched prover's linear-combination coefficients
+  /// are known (squeezed inside `prove_helper`), an instance may collapse its
+  /// several equally-shaped claims into a single random linear combination so it
+  /// scans/binds one polynomial per round instead of many. `coeffs` are exactly
+  /// this instance's slice of the batch coefficients (same order as
+  /// [`Self::initial_claims`]). The default is a no-op.
+  ///
+  /// Correctness contract: after fusing, [`Self::evaluation_points`] must still
+  /// return one triple per original claim so positional `Σ coeffs[i]·evals[i]`
+  /// in the batched prover is unchanged. Fusing instances therefore return the
+  /// combined triple in slot 0 (whose coefficient is 1 when it leads the batch)
+  /// and zeros elsewhere, which is byte-identical to computing each triple
+  /// separately and summing.
+  fn fuse_with_coeffs(&mut self, _coeffs: &[E::Scalar]) {}
+
   /// bounds a variable in the constituent polynomials
   fn bound(&mut self, r: &E::Scalar);
 
