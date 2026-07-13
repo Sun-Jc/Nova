@@ -88,49 +88,51 @@ fn compute_eval_gate<Scalar: Field>(
   (frac_0, frac_lead, frac_inf)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn eval_chunk<Scalar: Field>(
-  nl_first: &[Scalar],
-  nl_last: &[Scalar],
-  nr_first: &[Scalar],
-  nr_last: &[Scalar],
-  dl_first: &[Scalar],
-  dl_last: &[Scalar],
-  dr_first: &[Scalar],
-  dr_last: &[Scalar],
-  eq_first: &[Scalar],
-  eq_last: &[Scalar],
-  w_num: Scalar,
-  w_den: Scalar,
-) -> (Scalar, Scalar, Scalar) {
-  let mut coeff_0 = Scalar::ZERO;
-  let mut coeff_3 = Scalar::ZERO;
-  let mut eval_inf = Scalar::ZERO;
+/// Accumulate the round-polynomial contributions for x in `start..end`, summed
+/// over every instance. `eq(τ,x)` is shared across instances, so we sum each
+/// instance's λ-weighted gate value first and multiply by `eq` once per x
+/// (rather than once per (x, instance)). `half` is the low/high split offset
+/// into each half-MLE's `Z`.
+fn eval_chunk<E: Engine>(
+  halves: &[Halves<E>],
+  weights: &[(E::Scalar, E::Scalar)],
+  eq_first: &[E::Scalar],
+  eq_last: &[E::Scalar],
+  half: usize,
+  start: usize,
+  end: usize,
+) -> (E::Scalar, E::Scalar, E::Scalar) {
+  let mut coeff_0 = E::Scalar::ZERO;
+  let mut coeff_3 = E::Scalar::ZERO;
+  let mut eval_inf = E::Scalar::ZERO;
 
-  for (((((((((nl0, dl0), nr0), dr0), nl1), dl1), nr1), dr1), eq0), eq1) in nl_first
-    .iter()
-    .zip(dl_first)
-    .zip(nr_first)
-    .zip(dr_first)
-    .zip(nl_last)
-    .zip(dl_last)
-    .zip(nr_last)
-    .zip(dr_last)
-    .zip(eq_first)
-    .zip(eq_last)
-  {
-    let (frac_0, frac_lead, frac_inf) =
-      compute_eval_gate(*nl0, *nl1, *nr0, *nr1, *dl0, *dl1, *dr0, *dr1);
+  for x in start..end {
+    // Sum the λ-weighted gate contributions of all instances at this x; eq is
+    // a common factor pulled out of the instance loop.
+    let mut s0 = E::Scalar::ZERO;
+    let mut s_lead = E::Scalar::ZERO;
+    let mut s_inf = E::Scalar::ZERO;
+    for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
+      let (frac_0, frac_lead, frac_inf) = compute_eval_gate(
+        h.nl.Z[x],
+        h.nl.Z[x + half],
+        h.nr.Z[x],
+        h.nr.Z[x + half],
+        h.dl.Z[x],
+        h.dl.Z[x + half],
+        h.dr.Z[x],
+        h.dr.Z[x + half],
+      );
+      s0 += fraction_to_claim(frac_0, w_num, w_den);
+      s_lead += fraction_to_claim(frac_lead, w_num, w_den);
+      s_inf += fraction_to_claim(frac_inf, w_num, w_den);
+    }
 
-    let c = fraction_to_claim(frac_0, w_num, w_den);
-    let a = fraction_to_claim(frac_lead, w_num, w_den);
-    let e = *eq0;
-    coeff_0 += c * e;
-
-    let f = *eq1 - e;
-    coeff_3 += a * f;
-
-    eval_inf += fraction_to_claim(frac_inf, w_num, w_den) * (e - f);
+    let e = eq_first[x];
+    let f = eq_last[x] - e;
+    coeff_0 += s0 * e;
+    coeff_3 += s_lead * f;
+    eval_inf += s_inf * (e - f);
   }
 
   (coeff_0, coeff_3, eval_inf)
@@ -198,60 +200,31 @@ fn prove_layer_sumcheck<E: Engine>(
     let len = eq.len();
     let half = len / 2;
 
-    let mut coeff_0 = E::Scalar::ZERO;
-    let mut coeff_3 = E::Scalar::ZERO;
-    let mut eval_inf = E::Scalar::ZERO;
-
     let (eq_first, eq_last) = eq.Z.split_at(half);
 
-    for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
-      let (nl_first, nl_last) = h.nl.Z.split_at(half);
-      let (dl_first, dl_last) = h.dl.Z.split_at(half);
-      let (nr_first, nr_last) = h.nr.Z.split_at(half);
-      let (dr_first, dr_last) = h.dr.Z.split_at(half);
-
-      // Evaluate the half-length range in parallel, one chunk per call to the
-      // serial eval_chunk, then merge partial sums. Size chunks so there are a
-      // few per thread (better load balancing than one-chunk-per-thread) while
-      // staying serial below the threshold to avoid rayon fork/join overhead.
-      const PAR_THRESHOLD: usize = 1 << 16;
-      let (coeff_0_delta, coeff_3_delta, eval_inf_delta) = if half >= PAR_THRESHOLD {
-        let chunk = half.div_ceil(rayon::current_num_threads() * 4).max(1);
-        (0..half)
-          .into_par_iter()
-          .step_by(chunk)
-          .map(|start| {
-            let end = (start + chunk).min(half);
-            eval_chunk(
-              &nl_first[start..end],
-              &nl_last[start..end],
-              &nr_first[start..end],
-              &nr_last[start..end],
-              &dl_first[start..end],
-              &dl_last[start..end],
-              &dr_first[start..end],
-              &dr_last[start..end],
-              &eq_first[start..end],
-              &eq_last[start..end],
-              w_num,
-              w_den,
-            )
-          })
-          .reduce(
-            || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
-            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
-          )
-      } else {
-        eval_chunk(
-          nl_first, nl_last, nr_first, nr_last, dl_first, dl_last, dr_first, dr_last, eq_first,
-          eq_last, w_num, w_den,
+    // Evaluate the round polynomial over x in 0..half, summed across all
+    // instances. eq(τ,x) is shared, so eval_chunk sums each instance's
+    // λ-weighted gate value first and multiplies by eq once per x. Split the x
+    // range into chunks (a few per thread for load balancing) and evaluate them
+    // in parallel above the threshold; stay serial below it to avoid rayon
+    // fork/join overhead.
+    const PAR_THRESHOLD: usize = 1 << 16;
+    let (coeff_0, coeff_3, eval_inf) = if half >= PAR_THRESHOLD {
+      let chunk = half.div_ceil(rayon::current_num_threads() * 4).max(1);
+      (0..half)
+        .into_par_iter()
+        .step_by(chunk)
+        .map(|start| {
+          let end = (start + chunk).min(half);
+          eval_chunk(halves, &weights, eq_first, eq_last, half, start, end)
+        })
+        .reduce(
+          || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+          |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
         )
-      };
-
-      coeff_0 += coeff_0_delta;
-      coeff_3 += coeff_3_delta;
-      eval_inf += eval_inf_delta;
-    }
+    } else {
+      eval_chunk(halves, &weights, eq_first, eq_last, half, 0, half)
+    };
 
     let coeff_0123 = running_claim - coeff_0;
     let coeff_1 = (coeff_0123 - eval_inf) * E::Scalar::TWO_INV - coeff_3;
