@@ -31,6 +31,7 @@ use crate::spartan::logup_gkr::proof::{
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::traits::{Engine, TranscriptEngineTrait};
 use ff::{Field, PrimeField};
+use rayon::prelude::*;
 
 // The prover satisfies the protocol defined by the verifier: it uses the
 // verifier's transcript labels (`spec`) and fraction-absorb order, and produces
@@ -87,17 +88,18 @@ fn compute_eval_gate<Scalar: Field>(
   (frac_0, frac_lead, frac_inf)
 }
 
-fn eval_chunk<'a, Scalar: Field>(
-  nl_first: impl Iterator<Item = &'a Scalar>,
-  nl_last: impl Iterator<Item = &'a Scalar>,
-  nr_first: impl Iterator<Item = &'a Scalar>,
-  nr_last: impl Iterator<Item = &'a Scalar>,
-  dl_first: impl Iterator<Item = &'a Scalar>,
-  dl_last: impl Iterator<Item = &'a Scalar>,
-  dr_first: impl Iterator<Item = &'a Scalar>,
-  dr_last: impl Iterator<Item = &'a Scalar>,
-  eq_first: impl Iterator<Item = &'a Scalar>,
-  eq_last: impl Iterator<Item = &'a Scalar>,
+#[allow(clippy::too_many_arguments)]
+fn eval_chunk<Scalar: Field>(
+  nl_first: &[Scalar],
+  nl_last: &[Scalar],
+  nr_first: &[Scalar],
+  nr_last: &[Scalar],
+  dl_first: &[Scalar],
+  dl_last: &[Scalar],
+  dr_first: &[Scalar],
+  dr_last: &[Scalar],
+  eq_first: &[Scalar],
+  eq_last: &[Scalar],
   w_num: Scalar,
   w_den: Scalar,
 ) -> (Scalar, Scalar, Scalar) {
@@ -106,6 +108,7 @@ fn eval_chunk<'a, Scalar: Field>(
   let mut eval_inf = Scalar::ZERO;
 
   for (((((((((nl0, dl0), nr0), dr0), nl1), dl1), nr1), dr1), eq0), eq1) in nl_first
+    .iter()
     .zip(dl_first)
     .zip(nr_first)
     .zip(dr_first)
@@ -121,10 +124,13 @@ fn eval_chunk<'a, Scalar: Field>(
 
     let c = fraction_to_claim(frac_0, w_num, w_den);
     let a = fraction_to_claim(frac_lead, w_num, w_den);
-    coeff_0 += c * eq0;
-    coeff_3 += a * (*eq1 - *eq0);
+    let e = *eq0;
+    coeff_0 += c * e;
 
-    eval_inf += fraction_to_claim(frac_inf, w_num, w_den) * (*eq0 + eq0 - eq1);
+    let f = *eq1 - e;
+    coeff_3 += a * f;
+
+    eval_inf += fraction_to_claim(frac_inf, w_num, w_den) * (e - f);
   }
 
   (coeff_0, coeff_3, eval_inf)
@@ -204,20 +210,43 @@ fn prove_layer_sumcheck<E: Engine>(
       let (nr_first, nr_last) = h.nr.Z.split_at(half);
       let (dr_first, dr_last) = h.dr.Z.split_at(half);
 
-      let (coeff_0_delta, coeff_3_delta, eval_inf_delta) = eval_chunk(
-        nl_first.iter(),
-        nl_last.iter(),
-        nr_first.iter(),
-        nr_last.iter(),
-        dl_first.iter(),
-        dl_last.iter(),
-        dr_first.iter(),
-        dr_last.iter(),
-        eq_first.iter(),
-        eq_last.iter(),
-        w_num,
-        w_den,
-      );
+      // Evaluate the half-length range in parallel, one chunk per call to the
+      // serial eval_chunk, then merge partial sums. Size chunks so there are a
+      // few per thread (better load balancing than one-chunk-per-thread) while
+      // staying serial below the threshold to avoid rayon fork/join overhead.
+      const PAR_THRESHOLD: usize = 1 << 16;
+      let (coeff_0_delta, coeff_3_delta, eval_inf_delta) = if half >= PAR_THRESHOLD {
+        let chunk = half.div_ceil(rayon::current_num_threads() * 4).max(1);
+        (0..half)
+          .into_par_iter()
+          .step_by(chunk)
+          .map(|start| {
+            let end = (start + chunk).min(half);
+            eval_chunk(
+              &nl_first[start..end],
+              &nl_last[start..end],
+              &nr_first[start..end],
+              &nr_last[start..end],
+              &dl_first[start..end],
+              &dl_last[start..end],
+              &dr_first[start..end],
+              &dr_last[start..end],
+              &eq_first[start..end],
+              &eq_last[start..end],
+              w_num,
+              w_den,
+            )
+          })
+          .reduce(
+            || (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+          )
+      } else {
+        eval_chunk(
+          nl_first, nl_last, nr_first, nr_last, dl_first, dl_last, dr_first, dr_last, eq_first,
+          eq_last, w_num, w_den,
+        )
+      };
 
       coeff_0 += coeff_0_delta;
       coeff_3 += coeff_3_delta;
