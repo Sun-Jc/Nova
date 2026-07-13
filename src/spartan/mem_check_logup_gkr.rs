@@ -659,12 +659,12 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
     // way as the E-claim. The cubic coefficient is zero (degree 2).
     let evals: Vec<[E::Scalar; 3]> = self
       .polys
-      .par_iter()
+      .par_iter_mut()
       .zip(self.running_claims.par_iter())
       .map(|(poly, &claim)| {
         let (e0, _, einf) = self
           .eq_sumcheck
-          .evaluation_points_quadratic_with_one_input(poly, claim);
+          .evaluation_points_quadratic_with_one_input_and_cached_delta(poly, claim);
         [e0, E::Scalar::ZERO, einf]
       })
       .collect();
@@ -684,7 +684,7 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
     self
       .polys
       .par_iter_mut()
-      .for_each(|poly| poly.bind_poly_var_top(r));
+      .for_each(|poly| poly.bind_poly_var_top_with_cached_delta(r));
 
     self.eq_sumcheck.bound(r);
   }

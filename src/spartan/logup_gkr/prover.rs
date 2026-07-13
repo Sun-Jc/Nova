@@ -53,6 +53,10 @@ use crate::spartan::logup_gkr::verifier::{absorb_fraction, spec};
 /// entry per instance) so the eq instance can index them directly. Returns the
 /// compressed round polynomials, the sumcheck point `r`, and each instance's
 /// `(nL, nR, dL, dR)` evaluated at `r`.
+///
+/// ppSNARK's four-sub-instance path caches each top-variable delta during
+/// evaluation and reuses it during binding; other instance counts retain the
+/// general non-mutating evaluation path.
 #[allow(clippy::type_complexity)]
 fn prove_layer_sumcheck<E: Engine>(
   claim: E::Scalar,
@@ -82,6 +86,7 @@ fn prove_layer_sumcheck<E: Engine>(
   let mut claim_per_round = claim;
 
   let mut eq = EqSumCheckInstance::<E>::new(taus.to_vec());
+  let cache_deltas = m == 4;
 
   // Per-instance λ-powers: instance i's numerator gets λ^{2i}, denominator
   // λ^{2i+1}. λ^{2i} accumulates by a running product (O(m) muls) instead of
@@ -99,8 +104,11 @@ fn prove_layer_sumcheck<E: Engine>(
   for _ in 0..num_rounds {
     // Round polynomial s(X) = eq(τ,X) · G(X), degree 3. BDDT derivation returns
     // (s(0), cubic coeff, s(-1)); the verifier reconstructs s(1) = claim - s(0).
-    let (s_0, s_cubic, s_m1) =
-      eq.evaluation_points_logup_gate(nl, nr, dl, dr, &weights, claim_per_round);
+    let (s_0, s_cubic, s_m1) = if cache_deltas {
+      eq.evaluation_points_logup_gate_and_cache_deltas(nl, nr, dl, dr, &weights, claim_per_round)
+    } else {
+      eq.evaluation_points_logup_gate(nl, nr, dl, dr, &weights, claim_per_round)
+    };
 
     let poly = UniPoly::from_evals_deg3(&[s_0, claim_per_round - s_0, s_cubic, s_m1]);
 
@@ -115,7 +123,13 @@ fn prove_layer_sumcheck<E: Engine>(
       .chain(nr.par_iter_mut())
       .chain(dl.par_iter_mut())
       .chain(dr.par_iter_mut())
-      .for_each(|p| p.bind_poly_var_top(&r_i));
+      .for_each(|p| {
+        if cache_deltas {
+          p.bind_poly_var_top_with_cached_delta(&r_i);
+        } else {
+          p.bind_poly_var_top(&r_i);
+        }
+      });
     eq.bound(&r_i);
   }
 
