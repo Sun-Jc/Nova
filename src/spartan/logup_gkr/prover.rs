@@ -30,8 +30,7 @@ use crate::spartan::logup_gkr::proof::{
 };
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
 use crate::traits::{Engine, TranscriptEngineTrait};
-use ff::Field;
-use rayon::prelude::*;
+use ff::{Field, PrimeField};
 
 // The prover satisfies the protocol defined by the verifier: it uses the
 // verifier's transcript labels (`spec`) and fraction-absorb order, and produces
@@ -48,7 +47,6 @@ struct Halves<E: Engine> {
   dr: MultilinearPolynomial<E::Scalar>,
 }
 
-// Returns: (n0, d0, n_lead, d_lead)
 fn compute_eval_gate<Scalar: Field>(
   nl0: Scalar,
   nl1: Scalar,
@@ -58,18 +56,87 @@ fn compute_eval_gate<Scalar: Field>(
   dl1: Scalar,
   dr0: Scalar,
   dr1: Scalar,
-) -> ((Scalar, Scalar), (Scalar, Scalar)) {
-  let n0 = nl0 * dr0 + nr0 * dl0;
-  let d0 = dl0 * dr0;
+) -> (Fraction<Scalar>, Fraction<Scalar>, Fraction<Scalar>) {
+  let frac_0 = {
+    let frac_l = Fraction::new(nl0, dl0);
+    let frac_r = Fraction::new(nr0, dr0);
+    frac_l + frac_r
+  };
 
   let nl_lead = nl1 - nl0;
-  let dr_lead = dr1 - dr0;
-  let nr_lead = nr1 - nr0;
   let dl_lead = dl1 - dl0;
-  let n_lead = nl_lead * dr_lead + nr_lead * dl_lead;
-  let d_lead = dl_lead * dr_lead;
+  let nr_lead = nr1 - nr0;
+  let dr_lead = dr1 - dr0;
 
-  ((n0, d0), (n_lead, d_lead))
+  let frac_lead = {
+    let frac_l = Fraction::new(nl_lead, dl_lead);
+    let frac_r = Fraction::new(nr_lead, dr_lead);
+    frac_l + frac_r
+  };
+
+  let frac_inf = {
+    let nl_inf = nl0 - nl_lead;
+    let dl_inf = dl0 - dl_lead;
+    let nr_inf = nr0 - nr_lead;
+    let dr_inf = dr0 - dr_lead;
+    let frac_l = Fraction::new(nl_inf, dl_inf);
+    let frac_r = Fraction::new(nr_inf, dr_inf);
+    frac_l + frac_r
+  };
+
+  (frac_0, frac_lead, frac_inf)
+}
+
+fn eval_chunk<'a, Scalar: Field>(
+  nl_first: impl Iterator<Item = &'a Scalar>,
+  nl_last: impl Iterator<Item = &'a Scalar>,
+  nr_first: impl Iterator<Item = &'a Scalar>,
+  nr_last: impl Iterator<Item = &'a Scalar>,
+  dl_first: impl Iterator<Item = &'a Scalar>,
+  dl_last: impl Iterator<Item = &'a Scalar>,
+  dr_first: impl Iterator<Item = &'a Scalar>,
+  dr_last: impl Iterator<Item = &'a Scalar>,
+  eq_first: impl Iterator<Item = &'a Scalar>,
+  eq_last: impl Iterator<Item = &'a Scalar>,
+  w_num: Scalar,
+  w_den: Scalar,
+) -> (Scalar, Scalar, Scalar) {
+  let mut coeff_0 = Scalar::ZERO;
+  let mut coeff_3 = Scalar::ZERO;
+  let mut eval_inf = Scalar::ZERO;
+
+  for (((((((((nl0, dl0), nr0), dr0), nl1), dl1), nr1), dr1), eq0), eq1) in nl_first
+    .zip(dl_first)
+    .zip(nr_first)
+    .zip(dr_first)
+    .zip(nl_last)
+    .zip(dl_last)
+    .zip(nr_last)
+    .zip(dr_last)
+    .zip(eq_first)
+    .zip(eq_last)
+  {
+    let (frac_0, frac_lead, frac_inf) =
+      compute_eval_gate(*nl0, *nl1, *nr0, *nr1, *dl0, *dl1, *dr0, *dr1);
+
+    let c = fraction_to_claim(frac_0, w_num, w_den);
+    let a = fraction_to_claim(frac_lead, w_num, w_den);
+    coeff_0 += c * eq0;
+    coeff_3 += a * (*eq1 - *eq0);
+
+    eval_inf += fraction_to_claim(frac_inf, w_num, w_den) * (*eq0 + eq0 - eq1);
+  }
+
+  (coeff_0, coeff_3, eval_inf)
+}
+
+#[inline(always)]
+fn fraction_to_claim<Scalar: Field>(
+  frac: Fraction<Scalar>,
+  num_weight: Scalar,
+  den_weight: Scalar,
+) -> Scalar {
+  frac.num * num_weight + frac.den * den_weight
 }
 
 /// Transparent cubic sumcheck for one GKR layer, proving
@@ -125,17 +192,11 @@ fn prove_layer_sumcheck<E: Engine>(
     let len = eq.len();
     let half = len / 2;
 
-    let mut acc_0 = E::Scalar::ZERO;
-    let mut acc_lead = E::Scalar::ZERO;
+    let mut coeff_0 = E::Scalar::ZERO;
+    let mut coeff_3 = E::Scalar::ZERO;
+    let mut eval_inf = E::Scalar::ZERO;
 
     let (eq_first, eq_last) = eq.Z.split_at(half);
-
-    let mut e = E::Scalar::ZERO;
-    let mut f = E::Scalar::ZERO;
-    for (eq0, eq1) in eq_first.iter().zip(eq_last.iter()) {
-      e += *eq0;
-      f += *eq1 - *eq0;
-    }
 
     for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
       let (nl_first, nl_last) = h.nl.Z.split_at(half);
@@ -143,135 +204,31 @@ fn prove_layer_sumcheck<E: Engine>(
       let (nr_first, nr_last) = h.nr.Z.split_at(half);
       let (dr_first, dr_last) = h.dr.Z.split_at(half);
 
-      for (((((((nl0, dl0), nr0), dr0), nl1), dl1), nr1), dr1) in nl_first
-        .iter()
-        .zip(dl_first.iter())
-        .zip(nr_first.iter())
-        .zip(dr_first.iter())
-        .zip(nl_last.iter())
-        .zip(dl_last.iter())
-        .zip(nr_last.iter())
-        .zip(dr_last.iter())
-      {
-        let ((n0, d0), (n_lead, d_lead)) =
-          compute_eval_gate(*nl0, *nl1, *nr0, *nr1, *dl0, *dl1, *dr0, *dr1);
-
-        acc_0 += n0 * w_num + d0 * w_den;
-        acc_lead += n_lead * w_num + d_lead * w_den;
-      }
-    }
-    // (E + F x) * (A x^2 + B x + C)
-    let c = acc_0;
-    let a = acc_lead;
-    let full_eval_1 = running_claim - c * e;
-    let b = full_eval_1 * (f + e).invert().unwrap() - a - c;
-
-    let coeff_3 = a * f;
-    let coeff_2 = b * f + a * e;
-    let coeff_1 = f * c + e * b;
-    let coeff_0 = c * e;
-    let uni_poly = UniPoly::from_coeffs(vec![coeff_0, coeff_1, coeff_2, coeff_3]).unwrap();
-
-    // x3: A * F
-    // x2: B F + A E
-    // x: F C + E B
-    // 1: C E
-
-    // A, C, E, F
-    // B?
-    // (E + F)  ( A + B + C ) = K
-    // B = K / (E + F) - A - C
-
-    // Evaluate the round polynomial P(t) = Σ_x eq_t(x)·G_t(x) at t = 0,1,2,3,
-    // where at parameter t each MLE m contributes m0 + t·(m1 - m0) (m0 = low
-    // half, m1 = high half) — the MSB-first bind direction.
-    //
-
-    let ts = [
-      E::Scalar::ZERO,
-      E::Scalar::ONE,
-      E::Scalar::from(2u64),
-      E::Scalar::from(3u64),
-    ];
-    let p = (0..half)
-      .into_par_iter()
-      .map(|x| {
-        let e0 = eq.Z[x];
-        let e_step = eq.Z[x + half] - e0;
-        // per-instance gate contributions, batched by distinct powers of λ.
-        let mut g = [E::Scalar::ZERO; 4];
-        for (h, &(w_num, w_den)) in halves.iter().zip(weights.iter()) {
-          let nl0 = h.nl.Z[x];
-          let nl1 = h.nl.Z[x + half];
-          let nr0 = h.nr.Z[x];
-          let nr1 = h.nr.Z[x + half];
-          let dl0 = h.dl.Z[x];
-          let dl1 = h.dl.Z[x + half];
-          let dr0 = h.dr.Z[x];
-          let dr1 = h.dr.Z[x + half];
-
-          let mut g_tmp = [E::Scalar::ZERO; 4];
-
-          for (k, &t) in ts.iter().enumerate() {
-            let nl = nl0 + t * (nl1 - nl0);
-            let nr = nr0 + t * (nr1 - nr0);
-            let dl = dl0 + t * (dl1 - dl0);
-            let dr = dr0 + t * (dr1 - dr0);
-            // gate = fraction-add of the two children; batched value =
-            // λ^{2i}·gate.num + λ^{2i+1}·gate.den.
-            let gate = Fraction::new(nl, dl) + Fraction::new(nr, dr);
-            g[k] += w_num * gate.num + w_den * gate.den;
-
-            g_tmp[k] = w_num * gate.num + w_den * gate.den;
-          }
-
-          {
-            let nl_delta = nl1 - nl0;
-            let nr_delta = nr1 - nr0;
-            let dl_delta = dl1 - dl0;
-            let dr_delta = dr1 - dr0;
-            let nl2 = nl1 + nl_delta;
-            let nl3 = nl2 + nl_delta;
-            let nr2 = nr1 + nr_delta;
-            let nr3 = nr2 + nr_delta;
-            let dl2 = dl1 + dl_delta;
-            let dl3 = dl2 + dl_delta;
-            let dr2 = dr1 + dr_delta;
-            let dr3 = dr2 + dr_delta;
-            let mut f_rec: Vec<Fraction<E::Scalar>> = Vec::with_capacity(4);
-            f_rec.push(Fraction::new(nl0, dl0) + Fraction::new(nr0, dr0));
-            f_rec.push(Fraction::new(nl1, dl1) + Fraction::new(nr1, dr1));
-            f_rec.push(Fraction::new(nl2, dl2) + Fraction::new(nr2, dr2));
-            f_rec.push(Fraction::new(nl3, dl3) + Fraction::new(nr3, dr3));
-            let mut g_rec = [E::Scalar::ZERO; 4];
-            g_rec[0] = f_rec[0].num * w_num + f_rec[0].den * w_den;
-            g_rec[1] = f_rec[1].num * w_num + f_rec[1].den * w_den;
-            g_rec[2] = f_rec[2].num * w_num + f_rec[2].den * w_den;
-            g_rec[3] = f_rec[3].num * w_num + f_rec[3].den * w_den;
-            assert_eq!(g_rec, g_tmp);
-          }
-        }
-        let mut px = [E::Scalar::ZERO; 4];
-        for (k, &t) in ts.iter().enumerate() {
-          px[k] = (e0 + t * e_step) * g[k];
-        }
-        px
-      })
-      .reduce(
-        || [E::Scalar::ZERO; 4],
-        |mut acc, px| {
-          for k in 0..4 {
-            acc[k] += px[k];
-          }
-          acc
-        },
+      let (coeff_0_delta, coeff_3_delta, eval_inf_delta) = eval_chunk(
+        nl_first.iter(),
+        nl_last.iter(),
+        nr_first.iter(),
+        nr_last.iter(),
+        dl_first.iter(),
+        dl_last.iter(),
+        dr_first.iter(),
+        dr_last.iter(),
+        eq_first.iter(),
+        eq_last.iter(),
+        w_num,
+        w_den,
       );
 
-    let poly = UniPoly::from_evals(&p);
-
-    {
-      assert_eq!(poly, uni_poly);
+      coeff_0 += coeff_0_delta;
+      coeff_3 += coeff_3_delta;
+      eval_inf += eval_inf_delta;
     }
+
+    let coeff_0123 = running_claim - coeff_0;
+    let coeff_1 = (coeff_0123 - eval_inf) * E::Scalar::TWO_INV - coeff_3;
+    let coeff_2 = coeff_0123 - coeff_0 - coeff_1 - coeff_3;
+
+    let poly = UniPoly::from_coeffs(vec![coeff_0, coeff_1, coeff_2, coeff_3]).unwrap();
 
     transcript.absorb(spec::ROUND_POLY, &poly);
     let r_i = transcript.squeeze(spec::ROUND_CHALLENGE)?;
