@@ -399,16 +399,22 @@ impl<E: Engine> SumcheckEngine<E> for InnerBatchedSumcheckInstance<E> {
   }
 
   fn evaluation_points(&mut self) -> Vec<Vec<E::Scalar>> {
-    let (poly_A, poly_B, poly_C) = (&self.poly_L_row, &self.poly_L_col, &self.poly_val);
+    let running_claim_E = self.running_claim_E;
+    let eq_sumcheck = &self.eq_sumcheck;
+    let (poly_A, poly_B, poly_C, poly_E) = (
+      &mut self.poly_L_row,
+      &mut self.poly_L_col,
+      &mut self.poly_val,
+      &mut self.poly_E,
+    );
 
     // E claim: 1 N-scaling sum + claim-derived (BDDT, eprint 2025/1117 Section 6.2)
     let ((eval_point_0, bound_coeff, eval_point_inf), (eval_E_0, eval_E_bound_coeff, eval_E_inf)) =
       rayon::join(
-        || SumcheckProof::<E>::compute_eval_points_cubic(poly_A, poly_B, poly_C),
+        || SumcheckProof::<E>::compute_eval_points_cubic_with_cached_deltas(poly_A, poly_B, poly_C),
         || {
-          self
-            .eq_sumcheck
-            .evaluation_points_quadratic_with_one_input(&self.poly_E, self.running_claim_E)
+          eq_sumcheck
+            .evaluation_points_quadratic_with_one_input_and_cached_delta(poly_E, running_claim_E)
         },
       );
 
@@ -432,7 +438,7 @@ impl<E: Engine> SumcheckEngine<E> for InnerBatchedSumcheckInstance<E> {
       &mut self.poly_E,
     ]
     .par_iter_mut()
-    .for_each(|poly| poly.bind_poly_var_top(r));
+    .for_each(|poly| poly.bind_poly_var_top_with_cached_delta(r));
 
     self.eq_sumcheck.bound(r);
   }
