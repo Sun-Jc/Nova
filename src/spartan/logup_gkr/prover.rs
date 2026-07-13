@@ -155,13 +155,23 @@ pub fn prove<E: Engine>(
 
   // Build every instance's tree, leaf→root. trees[instance][layer], where
   // trees[i][j] has (num_vars - j) variables; [0] = input, [num_vars] = root.
-  let trees: Vec<Vec<Layer<E>>> = inputs.into_iter().map(|l| l.build_tree()).collect();
+  //
+  // Memory: layers are consumed root→leaf (step j reads layer j-1, for
+  // j = num_vars … 1), which is exactly descending index. So each tree is drained
+  // via `pop()` — the just-proven layer is dropped the instant it is consumed,
+  // instead of every layer staying live for the whole proof. Peak during the
+  // sumcheck loop drops from ~3N to ~N per instance (the build itself is still
+  // bottom-up, so the transient right after `build_tree` is unavoidable).
+  let mut trees: Vec<Vec<Layer<E>>> = inputs.into_iter().map(|l| l.build_tree()).collect();
 
-  // initial_claims = each instance's output (root) fraction, absorbed first.
+  // initial_claims = each instance's output (root) fraction, absorbed first. The
+  // root layer (index num_vars, a single cell) is popped and dropped here; only
+  // its two scalars survive in `initial_claims`.
   let initial_claims: Vec<LayerClaim<E>> = trees
-    .iter()
+    .iter_mut()
     .map(|t| {
-      let (n, d) = t[num_vars].output_fraction();
+      let root = t.pop().expect("tree has a root layer");
+      let (n, d) = root.output_fraction();
       LayerClaim::<E>::new(n, d)
     })
     .collect();
@@ -186,7 +196,10 @@ pub fn prove<E: Engine>(
 
     // Children are the two halves of layers[j-1] (which has num_vars-j+1 vars,
     // so each half has num_vars-j vars). nL/nR = num halves, dL/dR = den halves.
-    let child = |i: usize| &trees[i][j - 1];
+    // Pop layer j-1 off each tree: the loop consumes layers strictly root→leaf
+    // (descending index), so once popped, layer j-1 is never read again and its
+    // buffers can be moved into the sumcheck (and dropped at end of iteration).
+    let mut children: Vec<Layer<E>> = trees.iter_mut().map(|t| t.pop().unwrap()).collect();
     let child_len = 1usize << (num_vars - j + 1);
     let n = child_len / 2;
 
@@ -196,8 +209,7 @@ pub fn prove<E: Engine>(
     if num_vars - j == 0 {
       // Base case (j = num_vars, root reduction): the child layer has exactly
       // two cells; read the split directly, no sumcheck.
-      for i in 0..m {
-        let c = child(i);
+      for c in &children {
         layer_finals.push(LayerFinalClaim::<E>::new(
           c.num.Z[0], // nL
           c.num.Z[1], // nR
@@ -222,16 +234,21 @@ pub fn prove<E: Engine>(
       };
 
       // Half-MLEs struct-of-arrays: nL/nR = numerator halves, dL/dR = den halves.
+      // Move the child buffers into the halves (split each Z at n) instead of
+      // cloning: `children` is dropped at the end of this iteration anyway.
       let mut nl: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
       let mut nr: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
       let mut dl: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
       let mut dr: Vec<MultilinearPolynomial<E::Scalar>> = Vec::with_capacity(m);
-      for i in 0..m {
-        let c = child(i);
-        nl.push(MultilinearPolynomial::new(c.num.Z[..n].to_vec()));
-        nr.push(MultilinearPolynomial::new(c.num.Z[n..child_len].to_vec()));
-        dl.push(MultilinearPolynomial::new(c.den.Z[..n].to_vec()));
-        dr.push(MultilinearPolynomial::new(c.den.Z[n..child_len].to_vec()));
+      for c in children.drain(..) {
+        let mut num_z = c.num.Z;
+        let mut den_z = c.den.Z;
+        let num_hi = num_z.split_off(n);
+        let den_hi = den_z.split_off(n);
+        nl.push(MultilinearPolynomial::new(num_z));
+        nr.push(MultilinearPolynomial::new(num_hi));
+        dl.push(MultilinearPolynomial::new(den_z));
+        dr.push(MultilinearPolynomial::new(den_hi));
       }
 
       let (round_polys, r, finals) = prove_layer_sumcheck::<E>(
