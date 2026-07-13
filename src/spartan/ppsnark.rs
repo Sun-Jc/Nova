@@ -744,8 +744,11 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let S = S.pad();
     // sanity check that R1CSShape has all required size characteristics
     assert!(S.is_regular_shape());
+    // P0-A3: capture `num_vars` up front so `S` can be released right after the
+    // evaluation oracles are built (the witness-bound sumcheck only needs this).
+    let num_vars = S.num_vars;
 
-    let W = W.pad(&S); // pad the witness
+    let W_padded = W.pad(&S); // pad the witness
     let mut transcript = E::TE::new(b"RelaxedR1CSSNARK");
 
     // append the verifier key (which includes commitment to R1CS matrices) and the RelaxedR1CSInstance to the transcript
@@ -753,7 +756,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     transcript.absorb(b"U", U);
 
     // compute the full satisfying assignment by concatenating W.W, U.u, and U.X
-    let z = [W.W.clone(), vec![U.u], U.X.clone()].concat();
+    let z = [W_padded.W.clone(), vec![U.u], U.X.clone()].concat();
 
     // compute Az, Bz, Cz
     let (Az, Bz, Cz) = S.multiply_vec(&z)?;
@@ -771,7 +774,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     // Proves: 0 = Σ_{x∈{0,1}^log(m)} eq(τ,x) * (Az(x) * Bz(x) - (u·Cz(x) + E(x)))
     let uCz_E: Vec<E::Scalar> = Cz
       .iter()
-      .zip(W.E.iter())
+      .zip(W_padded.E.iter())
       .map(|(cz, e)| U.u * *cz + *e)
       .collect();
     let mut poly_Az = MultilinearPolynomial::new(Az);
@@ -792,6 +795,15 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let eval_Bz_at_r_outer = claims_outer[1];
     let eval_Cz_at_r_outer = MultilinearPolynomial::evaluate_with(&Cz, &r_outer);
     let eval_E_at_r_outer = claims_outer[2] - U.u * eval_Cz_at_r_outer;
+
+    // P0-A1: the outer sum-check polynomials are bound to length 1 but still hold
+    // ~m-capacity buffers, and `Cz` is no longer read after its evaluation above.
+    // Release them before the memory-check / inner phase allocates its N-sized
+    // buffers, so ~4m scalars do not stay resident across the peak.
+    drop(poly_Az);
+    drop(poly_Bz);
+    drop(poly_uCz_E);
+    drop(Cz);
 
     // Absorb outer sum-check claims into transcript
     transcript.absorb(
@@ -821,8 +833,12 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       .fold(E::Scalar::ONE, |acc, r| acc * (E::Scalar::ONE - r));
 
     // Pad E and W to size N for inner sum-check and PCS
-    let E = padded::<E>(&W.E, pk.S_repr.N, &E::Scalar::ZERO);
-    let W = padded::<E>(&W.W, pk.S_repr.N, &E::Scalar::ZERO);
+    let E = padded::<E>(&W_padded.E, pk.S_repr.N, &E::Scalar::ZERO);
+    let W = padded::<E>(&W_padded.W, pk.S_repr.N, &E::Scalar::ZERO);
+    // P0-A2: the length-m padded relaxed witness is no longer needed once the
+    // N-sized `E`/`W` are materialized. Drop it explicitly (rather than letting
+    // the `W` shadow above merely hide it) so ~2m scalars leave the working set.
+    drop(W_padded);
 
     // -----------------------------------------------------------------------
     // Step 2: Prepare the batched inner batched sum-check (memory + inner_batched + witness)
@@ -832,9 +848,19 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     // L_row(i) = eq(r_outer_full, row(i)) for all i
     // L_col(i) = z(col(i)) for all i, where z is the full satisfying assignment
     let (mem_row, mem_col, L_row, L_col) = pk.S_repr.evaluation_oracles(&S, &r_outer_full, &z);
+    // P0-A3: after the evaluation oracles are built, the local padded shape `S`
+    // and the assignment `z` are no longer used (only `S.num_vars` is needed
+    // later, saved above). Dropping `S` also frees the three sparse matrices and
+    // their lazily-built SpMV precompute caches, which can exceed the dense
+    // vectors in size. Overlap the release with the L_row/L_col MSMs.
     let (comm_L_row, comm_L_col) = rayon::join(
       || E::CE::commit(ck, &L_row, &E::Scalar::ZERO),
-      || E::CE::commit(ck, &L_col, &E::Scalar::ZERO),
+      || {
+        let comm = E::CE::commit(ck, &L_col, &E::Scalar::ZERO);
+        drop(z);
+        drop(S);
+        comm
+      },
     );
 
     // Absorb commitments to L_row and L_col
@@ -923,8 +949,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     };
 
     // Witness bound sum-check using r_outer_full as the random evaluation point
-    let mut witness_sc_inst =
-      WitnessBoundSumcheck::new(r_outer_full.clone(), W.clone(), S.num_vars);
+    let mut witness_sc_inst = WitnessBoundSumcheck::new(r_outer_full.clone(), W.clone(), num_vars);
 
     // -----------------------------------------------------------------------
     // Step 3: Run the batched inner sum-check (memory slot + inner + witness)
