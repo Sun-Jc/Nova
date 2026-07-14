@@ -1,31 +1,28 @@
 //! Bridge layer wiring Logup-GKR to ppSNARK's memory-check.
 //!
-//! This module is the *host* half of the Logup-GKR memory-check — the link
-//! between the pure, ppSNARK-agnostic `logup_gkr` argument (which owns no PCS)
-//! and `ppsnark` (which owns the commitments, the inner sumcheck, and the
-//! rerandomization of `L_row`/`L_col`). It lives outside `logup_gkr/` on
-//! purpose: that module stays a standalone fractional-sum argument, while this
-//! one depends on both sides.
+//! This module is the *host* half of the Logup-GKR memory-check. The
+//! `logup_gkr` core owns the fractional-sum reduction but no PCS; `ppsnark` owns
+//! the commitments and inner sumcheck. This bridge supplies ppSNARK's four
+//! equal-height sub-instances and rerandomizes all seven columns needed for
+//! reconcile into the inner sumcheck.
 //!
-//! **Verifier-first.** The verifier half here wraps the frozen
-//! `logup_gkr::verify` and closes soundness by (1) recomputing each logup
-//! instance's input-layer fraction from the columns the prover opens at the GKR
-//! evaluation point, (2) checking those match what the GKR reduced to, and (3)
-//! running the fractional balance check. It is written **before** any prover:
-//! the set of evaluations [`MemCheckOpenings`] names here *is* the contract a
-//! prover must satisfy — the prover must open exactly these columns at exactly
-//! the GKR eval_point, and no others.
+//! The verifier closes soundness by (1) reconstructing each input-layer
+//! fraction from the seven column evaluations claimed at the GKR `eval_point`,
+//! (2) comparing those fractions with the GKR reduction, and (3) checking the
+//! two fractional balances. [`MemCheckOpenings`] fixes the claimed columns and
+//! their order; the rerandomize sumcheck and batched PCS opening bind those
+//! claims to the committed columns at `r_inner_batched`.
 //!
 //! ## The four sub-instances (why four, not two)
 //! ppSNARK's memory-check is two logup relations (`row`, `col`), each a balance
 //! `Σ ts/(T+r) = Σ 1/(W+r)`. We encode each relation as **two** height-N
 //! fractional-sum sub-instances — a *table* side and an *access* side — so all
-//! four share one GKR depth `log N` and the frozen single-batched-tree verifier
-//! applies unchanged (it forbids uneven heights; here every side is exactly N
-//! because ppSNARK pads every memory-check column to N in setup). A single
+//! four share one GKR depth `log N`, as required by the batched GKR verifier;
+//! every side is exactly N because ppSNARK pads every memory-check column to N
+//! in setup. A single
 //! 2N-leaf signed-multiplicity tree would instead emit a `log(2N)` point, which
-//! cannot be rerandomized against the N-variable inner sumcheck; two N-leaf
-//! trees keep the point at `log N`. Instance order is fixed:
+//! cannot be rerandomized against the N-variable inner sumcheck; the two N-leaf
+//! trees for each relation keep the point at `log N`. Instance order is fixed:
 //!
 //! | idx | name        | num       | den                         |
 //! |-----|-------------|-----------|-----------------------------|
@@ -91,19 +88,18 @@ pub const NUM_SUB_INSTANCES: usize = 4;
 /// into the inner sumcheck. These are every column reconcile needs at the GKR
 /// point that the verifier cannot self-compute (it computes only `mem_row = eq`
 /// and the identity `id`): `L_row, L_col, addr_row, addr_col, ts_row, ts_col,
-/// mem_col`. The order is fixed by [`MemCheckOpenings::rerand_claims`]
-/// [`MemCheckOpenings::rerand_claims`] and must match between prover and
-/// verifier.
+/// mem_col`. The order is fixed by [`MemCheckOpenings::rerand_claims`] and must
+/// match between prover and verifier.
 pub const NUM_RERAND_COLUMNS: usize = 7;
 
-/// The column evaluations a prover **must** open at the GKR
+/// The column evaluations a prover claims at the GKR
 /// [`eval_point`](crate::spartan::logup_gkr::LogupGkrOpeningClaim::eval_point).
 ///
-/// This is the prover's opening contract, defined by the verifier. Every field
-/// is one column evaluated at the shared GKR point; the host reconstructs the
-/// four sub-instance fractions from these and compares against the GKR's
-/// reduced `openings`. The verifier recomputes the remaining pieces itself
-/// (`id`, `mem_row = eq(r_outer_full, ·)`), so they are not opened here.
+/// Every field is one column evaluated at the shared GKR point. The host uses
+/// them to reconstruct the four sub-instance fractions, while the rerandomize
+/// sumcheck carries the same claims to `r_inner_batched` for the batched PCS
+/// opening. The verifier computes `id` and `mem_row = eq(r_outer_full, ·)`
+/// directly, so neither needs a claim here.
 #[derive(Clone, Copy, Debug)]
 pub struct MemCheckOpenings<E: Engine> {
   /// `L_row(eval_point)` — the row lookup column.
@@ -121,7 +117,7 @@ pub struct MemCheckOpenings<E: Engine> {
   /// `mem_col(eval_point) = z(eval_point)` — the col table-value column.
   ///
   /// `mem_row` is `eq(r_outer_full, ·)`, which the verifier evaluates directly,
-  /// so only `mem_col` needs opening.
+  /// so only `mem_col` needs a claim.
   pub eval_mem_col: E::Scalar,
 }
 
@@ -148,8 +144,9 @@ impl<E: Engine> MemCheckOpenings<E> {
 /// These are exactly ppSNARK's padded memory-check columns (all length
 /// `N = 2^{log N}`). [`build_input_layers`]
 /// turns them into the four GKR input layers, and [`prove`] consumes the
-/// witness, opening the subset named by [`MemCheckOpenings`] at the shared
-/// point. Field meanings match the four-sub-instance table in the module docs:
+/// witness while claiming the seven evaluations named by [`MemCheckOpenings`]
+/// at the shared point. Field meanings match the four-sub-instance table in the
+/// module docs:
 /// - `mem_row = eq(r_outer_full, ·)`, `mem_col = z` (table values);
 /// - `L_row`/`L_col` the lookup columns, `addr_row = row`/`addr_col = col` the
 ///   access addresses, `ts_row`/`ts_col` the multiplicities.
@@ -272,13 +269,13 @@ pub fn build_input_layers<E: Engine>(
 
 /// Verifies the ppSNARK memory-check via Logup-GKR.
 ///
-/// Steps: (1) run the frozen GKR verifier to get the shared `eval_point` and the
-/// four reduced input-layer fractions; (2) recompute those four fractions from
-/// the prover's opened columns ([`MemCheckOpenings`]) and the fingerprint
-/// `(gamma, r)`, and require they match; (3) check the two balances. Returns the
-/// `eval_point` on success, so the caller can fold it into its batched PCS
-/// opening set. The transcript must be positioned exactly as the prover left it
-/// (GKR proof absorbed in the same slot).
+/// Steps: (1) run the GKR verifier to get the shared `eval_point` and four
+/// reduced input-layer fractions; (2) reconstruct those fractions from the
+/// prover's claimed columns ([`MemCheckOpenings`]) and the fingerprint
+/// `(gamma, r)`, and require they match; (3) check the two balances. The
+/// returned `eval_point` seeds the rerandomize final-claim check in the inner
+/// sumcheck. The transcript must be positioned immediately before the GKR
+/// proof.
 ///
 /// `r_outer_full` is ppSNARK's extended outer challenge, defining `mem_row =
 /// eq(r_outer_full, ·)`; the verifier evaluates it at `eval_point` itself.
@@ -290,7 +287,7 @@ pub fn verify<E: Engine>(
   openings: &MemCheckOpenings<E>,
   transcript: &mut E::TE,
 ) -> Result<Vec<E::Scalar>, NovaError> {
-  // (1) Frozen GKR verifier: shape-check, root gates, per-layer sumchecks.
+  // (1) GKR verifier: shape-check, root gates, per-layer sumchecks.
   let claim = verifier::verify::<E>(proof, transcript)?;
   let eval_point = claim.eval_point();
   let reduced = claim.openings();
@@ -298,7 +295,7 @@ pub fn verify<E: Engine>(
     return Err(NovaError::InvalidNumInstances);
   }
 
-  // (2) Recompute the four input-layer fractions from the opened columns.
+  // (2) Recompute the four input-layer fractions from the claimed columns.
   // Pieces the verifier evaluates itself at eval_point:
   let eval_id = IdentityPolynomial::<E::Scalar>::new(eval_point.len()).evaluate(eval_point);
   let eval_mem_row = EqPolynomial::new(r_outer_full.to_vec()).evaluate(eval_point);
@@ -467,23 +464,20 @@ pub fn verify_final_claim<E: Engine>(
     .sum()
 }
 
-/// Prover output for the Logup-GKR memory-check, before ppSNARK integration.
+/// Prover output for the Logup-GKR memory-check.
 ///
-/// Bundles the three things the three downstream consumers need:
+/// Bundles the three values consumed by ppSNARK integration:
 /// - `proof`: the GKR proof, absorbed into the SNARK and replayed by [`verify`];
-/// - `openings`: the column evaluations at the GKR `eval_point`, the
-///   [`MemCheckOpenings`] the host reconcile step checks. In a standalone run
-///   these are opened directly at `eval_point`; once wired into ppSNARK the same
-///   values arrive at the shared inner point via `rerandomize` instead;
-/// - `rerandomize`: the [`RerandomizeSumcheckInstance`] that moves `L_row`/
-///   `L_col` from `eval_point` into the inner sumcheck bundle (unused by the
-///   standalone verifier, produced here so the full plumbing is exercised).
+/// - `openings`: the seven column evaluations at the GKR `eval_point` that the
+///   host reconcile step checks;
+/// - `rerandomize`: the [`RerandomizeSumcheckInstance`] that carries those seven
+///   claims into the inner sumcheck and binds them at `r_inner_batched`.
 pub struct MemCheckProverOutput<E: Engine> {
   /// The GKR fractional-sum proof.
   pub proof: LogupGkrProof<E>,
   /// Column evaluations at the GKR `eval_point` (host reconcile input).
   pub openings: MemCheckOpenings<E>,
-  /// L_row/L_col opening-point reduction into the inner sumcheck.
+  /// Seven-column opening-point reduction into the inner sumcheck.
   pub rerandomize: RerandomizeSumcheckInstance<E>,
   /// The shared GKR evaluation point (length `log N`).
   pub eval_point: Vec<E::Scalar>,
@@ -493,11 +487,12 @@ pub struct MemCheckProverOutput<E: Engine> {
 ///
 /// This is the prover-side entry point mirroring [`verify`]. It:
 /// 1. builds the four GKR input layers ([`build_input_layers`]);
-/// 2. runs the frozen GKR prover to fold them and emit the proof plus the shared
+/// 2. runs the GKR prover to fold them and emit the proof plus the shared
 ///    `eval_point`;
-/// 3. evaluates the opened columns at `eval_point` to form [`MemCheckOpenings`];
-/// 4. builds the [`RerandomizeSumcheckInstance`] that will later carry
-///    `L_row`/`L_col` into the inner sumcheck.
+/// 3. evaluates the seven claimed columns at `eval_point` to form
+///    [`MemCheckOpenings`];
+/// 4. builds the [`RerandomizeSumcheckInstance`] that carries those claims into
+///    the inner sumcheck.
 ///
 /// The transcript must be in the same state the verifier expects at the GKR
 /// slot (the GKR prover absorbs exactly what [`verify`] replays). `(gamma, r)`
@@ -769,17 +764,11 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
 
 #[cfg(test)]
 mod tests {
-  //! End-to-end host-verifier tests. Each builds four N-leaf sub-instances with
-  //! a real (frozen) GKR prover, derives the [`MemCheckOpenings`] by evaluating
-  //! the raw columns at the GKR `eval_point`, and checks `verify`
-  //! accepts a balanced witness and rejects a tampered one. The GKR prover is
-  //! trusted here (it has its own round-trip tests); what is under test is the
-  //! End-to-end tests through the top-level [`prove`]/[`verify`] pair. Each
-  //! builds a balanced N=4 witness, proves it (four sub-instances folded by the
-  //! frozen GKR prover), and checks the host verifier accepts it and rejects
-  //! tampered multiplicities or mismatched openings. What is under test is this
-  //! module's own logic — `build_input_layers`, reconcile, balance, and the
-  //! rerandomize claims — with the GKR prover/verifier trusted (own tests).
+  //! End-to-end tests through the top-level [`prove`]/[`verify`] pair. Each test
+  //! builds four N=4 sub-instances and checks the host accepts a balanced witness
+  //! while rejecting tampered multiplicities or mismatched column claims. This
+  //! covers input-layer construction, reconcile, balance, and rerandomize claim
+  //! ordering.
   use super::*;
   use crate::traits::TranscriptEngineTrait;
 

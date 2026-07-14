@@ -11,7 +11,7 @@ pub mod logup_gkr;
 /// Inverse-logup memory-check for ppSNARK (feature `logup`).
 pub mod mem_check_logup;
 /// Bridge layer wiring the Logup-GKR argument to ppSNARK's memory-check
-/// (host reconcile + balance; rerandomize of L_row/L_col into the inner
+/// (host reconcile + balance; seven-column rerandomization into the inner
 /// sumcheck).
 pub mod mem_check_logup_gkr;
 pub mod ppsnark;

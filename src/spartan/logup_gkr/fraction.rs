@@ -30,7 +30,7 @@ impl<F: Field> Fraction<F> {
     Self { num, den }
   }
 
-  /// The additive identity `0/1`, used as the padding cell for the tree.
+  /// The additive identity `0/1` for projective fraction addition.
   pub fn zero() -> Self {
     Self {
       num: F::ZERO,

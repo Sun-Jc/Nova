@@ -6,9 +6,9 @@
 //! coefficient length halves each level, `N → N/2 → … → 1`). The same `Layer`
 //! type serves all levels, with no separate input/output variants.
 //!
-//! Each logup instance (`row` / `col`) starts from one input `Layer` whose
-//! leaves are the projective cells `(num, den) = (ts, T+r)` on the table side
-//! and `(1, W+r)` on the access side.
+//! ppSNARK constructs separate table and access input layers for each of its row
+//! and column relations. Their leaves are `(num, den) = (ts, T+r)` on a table
+//! side and `(-1, W+r)` on an access side.
 //!
 //! # Endianness (critical): MSB-first, pairs are `i` and `i+n`
 //! Nova's MLEs are **MSB-first** (`bind_poly_var_top` folds the top variable by
@@ -42,17 +42,16 @@ const FOLD_PARALLEL_THRESHOLD: usize = 1 << 16;
 /// per-layer *claim* exposes 4 values (`nL, nR, dL, dR`; see
 /// `proof::LayerFinalClaim`). Do not confuse the two.
 ///
-/// Invariant: `num.len() == den.len()` and both are a power of two; the padding
-/// cell is `(0, 1)`, the additive identity of the fraction monoid.
+/// Invariant: `num.len() == den.len()` and both lengths are a power of two.
 ///
 /// # Numerator/denominator convention (read before constructing)
-/// `num` is the **multiplicity** side (`ts` on the table side, `1` on the
-/// access side); `den` is the **fingerprint** side (`T+r` / `W+r`, never
+/// `num` is the **signed weight** side (`ts` on a table side, `-1` on an access
+/// side); `den` is the **fingerprint** side (`T+r` / `W+r`, never
 /// inverted). To make an accidental swap impossible, this type has **no
 /// positional constructor**: build it with field-init syntax so `num`/`den` are
 /// named explicitly, e.g. `Layer { num: ts, den: t_plus_r }`.
 pub struct Layer<E: Engine> {
-  /// Numerator = multiplicity (`ts` on the table side, `1` on the access side).
+  /// Numerator = signed weight (`ts` on a table side, `-1` on an access side).
   pub num: MultilinearPolynomial<E::Scalar>,
   /// Denominator = fingerprint (`T+r` / `W+r`), never inverted.
   pub den: MultilinearPolynomial<E::Scalar>,

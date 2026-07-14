@@ -5,8 +5,8 @@
 //! `verifier.rs`; this file produces a proof the verifier accepts, importing the
 //! verifier's `spec` labels and `absorb_fraction` rather than restating them.
 //!
-//! It builds one batched tree over all logup instances, folds it leaf→root, and
-//! per internal layer runs one transparent cubic sumcheck
+//! It builds one equal-height tree per input, folds them leaf→root, and for each
+//! internal depth runs one transparent cubic sumcheck
 //! ([`prove_layer_sumcheck`]) reducing the merged fraction-sum claim to the next
 //! layer.
 //!
@@ -140,14 +140,14 @@ fn prove_layer_sumcheck<E: Engine>(
   Ok((polys, r, finals))
 }
 
-/// Proves the fractional-sum identity `Σ p/q = root` for all instances in one
-/// batched tree (`inputs` holds one input `Layer` per instance, `[row, col]`),
-/// returning the proof and the shared opening claim.
+/// Proves the fractional-sum identity `Σ p/q = root` for all equal-height input
+/// trees in one batched proof, returning the proof and the shared opening claim.
 ///
-/// All instances must have the same height (power of two, ≥ 2). The soundness
-/// red line — absorbing every leaf/root/claim before sampling a challenge — is
-/// enforced here: `initial_claims` and each layer's `final_claims` are absorbed
-/// before the next challenge is drawn.
+/// `inputs` holds one input [`Layer`] per instance. Every layer must have the
+/// same positive `num_vars`, so every coefficient vector has the same
+/// power-of-two length of at least two. The soundness invariant is to absorb
+/// every root and layer claim before sampling the challenge that depends on it;
+/// `initial_claims` and each layer's `final_claims` enforce this order.
 pub fn prove<E: Engine>(
   inputs: Vec<Layer<E>>,
   transcript: &mut E::TE,

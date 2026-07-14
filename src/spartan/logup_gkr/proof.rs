@@ -1,12 +1,12 @@
 //! Proof objects for the Logup-GKR fractional-sum argument.
 //!
-//! # One batched tree, not N independent trees
-//! The logup instances (`row`, `col`) are padded to a uniform height and folded
-//! through a **single** `BatchTree` with **one shared GKR depth**, so the
-//! evaluation point is shared *by construction*. There is no per-tree proof and
-//! no "assert the two points are equal". Per layer, the instances' column pairs
-//! are batched into one sumcheck via a fresh `λ`. Sumcheck round polynomials use
-//! Nova's `CompressedUniPoly`.
+//! # One batched proof over equal-height trees
+//! Each input [`Layer`](super::layer::Layer) defines a separate fractional-sum
+//! tree. All inputs must already have the same number of variables; the prover
+//! does not pad them. At each depth, the corresponding tree layers are batched
+//! into one sumcheck via a fresh `λ`, producing one shared evaluation point for
+//! all trees. Their claims are carried in a single proof rather than separate
+//! per-tree proofs. Sumcheck round polynomials use Nova's `CompressedUniPoly`.
 
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::univariate::CompressedUniPoly;
@@ -73,13 +73,14 @@ pub struct LayerSumcheck<E: Engine> {
   pub round_polys: Vec<CompressedUniPoly<E::Scalar>>,
 }
 
-/// A single **batched** Logup-GKR proof over all instances (row, col).
+/// A single **batched** Logup-GKR proof over all input instances.
 ///
-/// Instance-indexed vectors are ordered `[row, col]`. `initial_claims` are the
+/// Instance-indexed vectors preserve the caller's input order; ppSNARK uses
+/// `[row_table, row_access, col_table, col_access]`. `initial_claims` are the
 /// per-instance output-layer fractions (observed first). `final_claims[layer]`
 /// holds one split claim per instance; `sumchecks[layer]` is the one batched
-/// sumcheck for that layer. Ordering is output→input, and the top transition
-/// (0-variable layer) carries no sumcheck, so
+/// sumcheck for that layer. Layers are ordered output→input, and the top
+/// transition (0-variable layer) carries no sumcheck, so
 /// `sumchecks.len() + 1 == final_claims.len()`.
 ///
 /// The per-layer batching challenge `λ` is **not** stored here: it is a
@@ -87,8 +88,8 @@ pub struct LayerSumcheck<E: Engine> {
 /// one `λ` across layers would let the prover adaptively forge each layer's
 /// claims). Likewise `initial_claims` are not bound to committed data by this
 /// proof alone; soundness closes at the host's reconcile step, where the
-/// returned `openings` must match the fractions the host recomputes from its
-/// real `L_row`/`L_col` openings.
+/// returned `openings` must match the fractions reconstructed from the host's
+/// claimed column evaluations at `eval_point`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct LogupGkrProof<E: Engine> {
@@ -103,11 +104,10 @@ pub struct LogupGkrProof<E: Engine> {
 /// Verifier output — a **continuation token** carrying the shared opening
 /// claim, with its point field named Nova's `eval_point`.
 ///
-/// The host reads only [`Self::eval_point`] to build its merged PCS opening set;
-/// `openings` (the per-instance input-layer fractions the GKR reduced to, order
-/// `[row, col]`) is handed to the host's reconcile step, which is where the
-/// `0/den` zero-sum check lives — **not** inside the GKR verifier. See the host
-/// contract in [`crate::spartan::logup_gkr`].
+/// The host uses [`Self::eval_point`] to seed the opening-point reduction and
+/// uses `openings` to reconcile every reduced input-layer fraction against its
+/// claimed columns. The ppSNARK host also performs the `0/den` zero-sum check;
+/// neither operation belongs to the GKR verifier.
 #[derive(Clone, Debug)]
 pub struct LogupGkrOpeningClaim<E: Engine> {
   eval_point: Vec<E::Scalar>,
@@ -123,14 +123,13 @@ impl<E: Engine> LogupGkrOpeningClaim<E> {
     }
   }
 
-  /// The single shared evaluation point the host opens its columns at.
+  /// The shared evaluation point to which all input-layer claims are reduced.
   pub fn eval_point(&self) -> &[E::Scalar] {
     &self.eval_point
   }
 
-  /// The reduced per-instance input-layer fractions (`[row, col]`), which the
-  /// host's reconcile step recomputes from its own `L_row`/`L_col` openings and
-  /// compares against.
+  /// The reduced input-layer fractions in caller input order, which the host
+  /// reconstructs from its claimed column evaluations and compares against.
   pub fn openings(&self) -> &[Fraction<E::Scalar>] {
     &self.openings
   }

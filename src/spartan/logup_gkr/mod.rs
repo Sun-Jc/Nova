@@ -2,10 +2,10 @@
 //!
 //! Replaces the inverse-logup memory-check in `ppsnark.rs` (the
 //! `MemorySumcheckInstance` 6-route sumcheck + 4 inverse-polynomial
-//! commitments) with a fractional-sum GKR tree per logup instance (`row`,
-//! `col`). Projective fractions keep the circuit inversion-free, so the four
-//! inverse commitments — measured at ~4.17s of a 15.7s prove at 1M
-//! constraints — disappear.
+//! commitments) with four equal-height fractional-sum GKR trees: the table and
+//! access sides of the row and column relations. Projective fractions keep the
+//! circuit inversion-free, so the four inverse commitments — measured at
+//! ~4.17s of a 15.7s prove at 1M constraints — disappear.
 //!
 //! ## Module map
 //! - [`fraction`]: projective fraction + 2-to-1 gate (pure).
@@ -17,14 +17,13 @@
 //! ## Boundary with ppSNARK (host reconcile contract)
 //! The argument owns no commitment scheme. Its verifier returns a
 //! [`proof::LogupGkrOpeningClaim`]: a single shared `eval_point` plus the
-//! per-instance input-layer fractions `openings` (order `[row, col]`). The
-//! **host** then:
-//! 1. rerandomizes `L_row`/`L_col` at `eval_point` into a sumcheck batched with
-//!    the inner sumcheck, and opens them (with the other columns) via HyperKZG
-//!    at the shared point;
-//! 2. recomputes each instance's fraction from its opened `L`/`addr`/`ts`
-//!    (`den = L·γ + addr + r`, `num = ts`) and checks it equals the matching
-//!    entry of `openings`;
+//! four input-layer fractions `openings`, ordered `[row_table, row_access,
+//! col_table, col_access]`. The **host** then:
+//! 1. rerandomizes the seven claimed columns `[L_row, L_col, addr_row, addr_col,
+//!    ts_row, ts_col, mem_col]` from `eval_point` into the inner sumcheck and
+//!    binds them at `r_inner_batched` through the batched PCS opening;
+//! 2. recomputes the four fractions from those claims (`num = ts` on the table
+//!    sides, `num = -1` on the access sides) and checks them against `openings`;
 //! 3. runs the `0/den` zero-sum balance check.
 //! Steps 2-3 are the host's job, never the GKR verifier's.
 

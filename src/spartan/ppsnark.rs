@@ -1226,10 +1226,15 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       &mut transcript,
     )?;
 
-    // Batched-inner claim layout. `prove_helper` places the memory-check slot
-    // first, so its claims occupy coeffs `[0, MEM_CLAIMS)` and the inner (ABC, E)
-    // and witness claims follow: ABC at `MEM_CLAIMS`, E at `MEM_CLAIMS + 1`,
-    // witness at `MEM_CLAIMS + 2`. MEM_CLAIMS is 6 (inverse-logup) or 7 (GKR).
+    // Batched-inner claim layout:
+    //
+    //   mode            | memory-check | ABC | E | witness
+    //   ----------------+--------------+-----+---+--------
+    //   inverse-logup   | [0, 6)       |  6  | 7 |    8
+    //   Logup-GKR       | [0, 7)       |  7  | 8 |    9
+    //
+    // `prove_helper` places the memory-check slot first, so its indices always
+    // start at zero. `mem_claims` selects the first shared-claim index.
     #[cfg(feature = "logup-no-gkr")]
     let mem_claims = mem_check_logup::NUM_MEM_CLAIMS;
     #[cfg(not(feature = "logup-no-gkr"))]
@@ -1268,8 +1273,8 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       let taus_masked_bound_r_inner_batched =
         MaskedEqPolynomial::new(&eq_r_outer, vk.num_vars.log_2()).evaluate(&r_inner_batched);
 
-      // Memory-check slot's final-claim contribution: inverse-logup's six routes
-      // (coeffs 0-5) or Logup-GKR's seven rerandomize columns (coeffs 9-15).
+      // Memory-check slot's final-claim contribution uses coeffs[0..6] for the
+      // inverse-logup routes or coeffs[0..7] for the seven GKR columns.
       #[cfg(feature = "logup-no-gkr")]
       let mem_final = {
         let public_io: Vec<E::Scalar> = vec![U.u].into_iter().chain(U.X.iter().cloned()).collect();
