@@ -4,8 +4,8 @@
 //! `MemorySumcheckInstance` 6-route sumcheck + 4 inverse-polynomial
 //! commitments) with four equal-height fractional-sum GKR trees: the table and
 //! access sides of the row and column relations. Projective fractions keep the
-//! circuit inversion-free, so the four inverse commitments — measured at
-//! ~4.17s of a 15.7s prove at 1M constraints — disappear.
+//! circuit inversion-free and eliminate the four inverse-polynomial
+//! commitments.
 //!
 //! ## Module map
 //! - [`fraction`]: projective fraction + 2-to-1 gate (pure).

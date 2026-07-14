@@ -25,12 +25,10 @@ use crate::traits::Engine;
 use rayon::prelude::*;
 
 /// Parallelize `fold_up` only above this many output cells. A fold cell is a
-/// few field multiplications — very cheap — so rayon's per-fold scheduling
-/// overhead (~1-3 ms) dominates until the layer is large. Measured crossover
-/// (BN254, `benches/logup_gkr.rs` `fold-crossover`): serial wins up to ~32768
-/// (tie), parallel wins from ~65536 (2.3×) growing with size. NOT the crate's
-/// `PARALLEL_THRESHOLD` (=4096), which is tuned for per-element curve ops (MSM),
-/// where each element is far more expensive than a fold cell.
+/// few field multiplications, so rayon's scheduling overhead dominates on
+/// smaller layers. This threshold is intentionally higher than the crate's
+/// `PARALLEL_THRESHOLD`, which is tuned for more expensive per-element curve
+/// operations such as MSMs.
 const FOLD_PARALLEL_THRESHOLD: usize = 1 << 16;
 
 /// One level of a fractional-sum tree: parallel numerator and denominator

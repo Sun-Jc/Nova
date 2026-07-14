@@ -224,7 +224,7 @@ mod tests {
   // Hand-build the proof for a single-instance, 2-leaf tree (num_vars = 1):
   // only the root reduction (base case) runs — no sumcheck — so the whole proof
   // is constructible from `layer.rs` alone, following this module's spec.
-  fn hand_built_2leaf(num: Vec<u64>, den: Vec<u64>) -> (LogupGkrProof<E>, Vec<(Fr, Fr)>) {
+  fn hand_built_2leaf(num: Vec<u64>, den: Vec<u64>) -> LogupGkrProof<E> {
     assert_eq!(num.len(), 2);
     let input = Layer::<E> {
       num: mle(num.clone()),
@@ -240,19 +240,16 @@ mod tests {
       child.den.Z[0],
       child.den.Z[1],
     );
-    let proof = LogupGkrProof {
+    LogupGkrProof {
       initial_claims: vec![LayerClaim::<E>::new(rn, rd)],
       final_claims: vec![vec![final_claim]],
       sumchecks: vec![],
-    };
-    // The input-layer fraction the verifier should return (at the 1-var point).
-    let inputs = vec![(child.num.Z[0], child.den.Z[0])]; // placeholder; checked below
-    (proof, inputs)
+    }
   }
 
   #[test]
   fn verifier_accepts_hand_built_valid_proof() {
-    let (proof, _) = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    let proof = hand_built_2leaf(vec![3, 5], vec![7, 11]);
     let mut tr = <E as Engine>::TE::new(b"gkr-indep");
     let claim =
       verify::<E>(&proof, &mut tr).expect("verifier must accept a valid hand-built proof");
@@ -263,7 +260,7 @@ mod tests {
 
   #[test]
   fn verifier_rejects_wrong_root() {
-    let (mut proof, _) = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    let mut proof = hand_built_2leaf(vec![3, 5], vec![7, 11]);
     // Corrupt the root claim so it no longer equals the gate of its children.
     proof.initial_claims[0].num += Fr::from(1);
     let mut tr = <E as Engine>::TE::new(b"gkr-indep");
@@ -272,7 +269,7 @@ mod tests {
 
   #[test]
   fn verifier_rejects_malformed_shape() {
-    let (mut proof, _) = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    let mut proof = hand_built_2leaf(vec![3, 5], vec![7, 11]);
     // sumchecks.len() + 1 must equal final_claims.len(); break it.
     proof
       .sumchecks
