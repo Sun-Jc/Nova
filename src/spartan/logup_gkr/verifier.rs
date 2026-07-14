@@ -141,12 +141,17 @@ pub fn verify<E: Engine>(
     let lambda = transcript.squeeze(spec::LAMBDA)?;
 
     if t == 0 {
-      // Root reduction: the root fraction must equal the fraction-add gate of
-      // its two child cells, per instance. gate = (nL·dR + nR·dL, dL·dR).
+      // Root reduction: the claimed root must equal the fraction-add gate of its
+      // two child cells **component-wise** (`num` and `den` separately).
+      // Cross-multiplication is unsound here: `(0,0)` cross-equals any
+      // `(a,b)`, so a prover could post roots `(0,1)` with all-zero children and
+      // later vacuously pass host reconcile against real columns. HyperPlonk
+      // uses the same exact check; honesty already produces matching MLE
+      // components, so this rejects only degenerate / scaled forgeries.
       for i in 0..m {
         let gate = layer_finals[i].compute_gate();
         let r = running[i];
-        if r.num * gate.den != gate.num * r.den {
+        if r.num != gate.num || r.den != gate.den {
           return Err(NovaError::InvalidSumcheckProof);
         }
       }
@@ -276,6 +281,38 @@ mod tests {
       .push(crate::spartan::logup_gkr::proof::LayerSumcheck {
         round_polys: vec![],
       });
+    let mut tr = <E as Engine>::TE::new(b"gkr-indep");
+    assert!(verify::<E>(&proof, &mut tr).is_err());
+  }
+
+  #[test]
+  fn verifier_rejects_zero_zero_children_of_unit_root() {
+    // P0 forgery fragment: root `(0,1)` with children `(0,0)`. Under
+    // cross-multiplication `0·0 == 0·1` this would pass; exact equality
+    // rejects it. gate = (0,0) ≠ (0,1).
+    let zero = Fraction::new(Fr::ZERO, Fr::ZERO);
+    let proof = LogupGkrProof {
+      initial_claims: vec![Fraction::new(Fr::ZERO, Fr::ONE)],
+      final_claims: vec![vec![LayerFinalClaim {
+        left: zero,
+        right: zero,
+      }]],
+      sumchecks: vec![],
+    };
+    let mut tr = <E as Engine>::TE::new(b"gkr-p0");
+    assert!(
+      verify::<E>(&proof, &mut tr).is_err(),
+      "must reject (0,1) root with (0,0) children"
+    );
+  }
+
+  #[test]
+  fn verifier_rejects_scaled_root() {
+    // Exact equality also rejects a nonzero scale of an otherwise valid gate
+    // (cross-mult would accept).
+    let mut proof = hand_built_2leaf(vec![3, 5], vec![7, 11]);
+    proof.initial_claims[0].num *= Fr::from(2);
+    proof.initial_claims[0].den *= Fr::from(2);
     let mut tr = <E as Engine>::TE::new(b"gkr-indep");
     assert!(verify::<E>(&proof, &mut tr).is_err());
   }

@@ -49,7 +49,7 @@
 use crate::errors::NovaError;
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::logup_gkr::layer::Layer;
-use crate::spartan::logup_gkr::proof::LogupGkrProof;
+use crate::spartan::logup_gkr::proof::{LayerFinalClaim, LogupGkrProof};
 use crate::spartan::logup_gkr::verifier;
 use crate::spartan::polys::eq::EqPolynomial;
 use crate::spartan::polys::identity::IdentityPolynomial;
@@ -332,10 +332,12 @@ pub fn verify<E: Engine>(
 
   let recomputed = [row_table, row_access, col_table, col_access];
 
-  // Each recomputed fraction must match the GKR-reduced input-layer fraction
-  // (cross-multiplicative equality, since neither side is normalized).
+  // Each recomputed fraction must match the GKR-reduced input-layer claim
+  // **component-wise**. Cross-multiplication is unsound: a reduced `(0,0)`
+  // would cross-equal any recomputed `(a,b)` and disconnect the GKR root from
+  // the committed columns (see logup_gkr verifier root-gate comment).
   for (rc, red) in recomputed.iter().zip(reduced.iter()) {
-    if rc.num * red.den != red.num * rc.den {
+    if rc.num != red.num || rc.den != red.den {
       return Err(NovaError::InvalidSumcheckProof);
     }
   }
@@ -877,6 +879,90 @@ mod tests {
       )
       .is_err(),
       "must reject an opening that disagrees with the GKR reduction"
+    );
+  }
+
+  /// Zero cubic round poly whose `g(0)+g(1)=0` (valid for a zero sumcheck claim).
+  fn zero_cubic_compressed() -> crate::spartan::polys::univariate::CompressedUniPoly<Fr> {
+    use crate::spartan::polys::univariate::UniPoly;
+    UniPoly::from_evals_deg3(&[Fr::ZERO, Fr::ZERO, Fr::ZERO, Fr::ZERO]).compress()
+  }
+
+  /// All-`(0,0)` intermediate GKR forged for `num_vars = 2`, `m = 4`.
+  /// Variant A: roots `(0,1)` — the documented P0 shape (blocked at root gate).
+  /// Variant B: roots `(0,0)` — passes GKR exact root check but fails host reconcile.
+  fn forged_zero_gkr(roots_den_one: bool) -> LogupGkrProof<E> {
+    let zero = Fraction::new(Fr::ZERO, Fr::ZERO);
+    let split = LayerFinalClaim {
+      left: zero,
+      right: zero,
+    };
+    let root = if roots_den_one {
+      Fraction::new(Fr::ZERO, Fr::ONE)
+    } else {
+      zero
+    };
+    LogupGkrProof {
+      initial_claims: vec![root; 4],
+      final_claims: vec![vec![split; 4], vec![split; 4]],
+      sumchecks: vec![crate::spartan::logup_gkr::proof::LayerSumcheck {
+        round_polys: vec![zero_cubic_compressed()],
+      }],
+    }
+  }
+
+  #[test]
+  fn rejects_p0_zero_zero_chain_with_unit_roots() {
+    // Classic P0: roots `(0,1)`, every split `(0,0)`, zero sumchecks, real
+    // column openings. Cross-mult accepted this end-to-end; exact equality must
+    // reject (at the GKR root gate).
+    let w = balanced_witness();
+    let mut tr_p = <E as Engine>::TE::new(b"memcheck-p0");
+    let out = prove::<E>(w.cols.clone(), w.gamma, w.r, &mut tr_p).expect("prove");
+    let forged = forged_zero_gkr(true);
+    let mut tr_v = <E as Engine>::TE::new(b"memcheck-p0");
+    assert!(
+      verify::<E>(
+        &forged,
+        w.gamma,
+        w.r,
+        &w.r_outer_full,
+        &out.openings,
+        &mut tr_v
+      )
+      .is_err(),
+      "must reject P0 (0,1)/(0,0) forgery"
+    );
+  }
+
+  #[test]
+  fn rejects_all_zero_gkr_chain_against_real_openings() {
+    // Roots `(0,0)` make the root gate pass under exact equality too, but host
+    // reconcile must still refuse `(a,b) == (0,0)`.
+    let w = balanced_witness();
+    let mut tr_p = <E as Engine>::TE::new(b"memcheck-p0b");
+    let out = prove::<E>(w.cols.clone(), w.gamma, w.r, &mut tr_p).expect("prove");
+    // Openings are at the honest eval_point; forged proof yields a different
+    // point, but reconcile compares fraction components before that matters —
+    // and even if GKR completed, reduced is `(0,0)` ≠ recomputed dens.
+    // Rebuild openings for the forged eval_point by re-proving is unnecessary:
+    // any nonzero fingerprint den against reduced `(0,0)` fails exact match.
+    let forged = forged_zero_gkr(false);
+    let mut tr_v = <E as Engine>::TE::new(b"memcheck-p0b");
+    // Transcript label matches prove so this is a clean replay attempt; GKR
+    // absorbs forged claims first. Real openings (wrong point) still give
+    // nonzero dens almost surely vs reduced `(0,0)`.
+    assert!(
+      verify::<E>(
+        &forged,
+        w.gamma,
+        w.r,
+        &w.r_outer_full,
+        &out.openings,
+        &mut tr_v
+      )
+      .is_err(),
+      "must reject all-(0,0) GKR against real column openings"
     );
   }
 
