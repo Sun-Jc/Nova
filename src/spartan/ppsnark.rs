@@ -544,10 +544,6 @@ pub struct RelaxedR1CSSNARK<E: Engine, EE: EvaluationEngineTrait<E>> {
 }
 
 impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARK<E, EE> {
-  /// Batched inner sum-check prover for 4 instances: memory, inner_batched,
-  /// witness, and the Logup-GKR rerandomize instance (L_row/L_col opening-point
-  /// reduction). All four share the same size and (reported) degree, so they
-  /// fold into one RLC'd sumcheck landing at the shared point `r_inner_batched`.
   /// Batched inner sum-check prover for three instances: a memory-check slot,
   /// the inner batched instance, and the witness-bound instance. The
   /// memory-check slot is either the inverse-logup `MemorySumcheckInstance`
@@ -744,7 +740,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let S = S.pad();
     // sanity check that R1CSShape has all required size characteristics
     assert!(S.is_regular_shape());
-    // P0-A3: capture `num_vars` up front so `S` can be released right after the
+    // Capture `num_vars` up front so `S` can be released right after the
     // evaluation oracles are built (the witness-bound sumcheck only needs this).
     let num_vars = S.num_vars;
 
@@ -796,7 +792,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     let eval_Cz_at_r_outer = MultilinearPolynomial::evaluate_with(&Cz, &r_outer);
     let eval_E_at_r_outer = claims_outer[2] - U.u * eval_Cz_at_r_outer;
 
-    // P0-A1: the outer sum-check polynomials are bound to length 1 but still hold
+    // The outer sum-check polynomials are bound to length 1 but still hold
     // ~m-capacity buffers, and `Cz` is no longer read after its evaluation above.
     // Release them before the memory-check / inner phase allocates its N-sized
     // buffers, so ~4m scalars do not stay resident across the peak.
@@ -835,7 +831,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     // Pad E and W to size N for inner sum-check and PCS
     let E = padded::<E>(&W_padded.E, pk.S_repr.N, &E::Scalar::ZERO);
     let W = padded::<E>(&W_padded.W, pk.S_repr.N, &E::Scalar::ZERO);
-    // P0-A2: the length-m padded relaxed witness is no longer needed once the
+    // The length-m padded relaxed witness is no longer needed once the
     // N-sized `E`/`W` are materialized. Drop it explicitly (rather than letting
     // the `W` shadow above merely hide it) so ~2m scalars leave the working set.
     drop(W_padded);
@@ -848,7 +844,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
     // L_row(i) = eq(r_outer_full, row(i)) for all i
     // L_col(i) = z(col(i)) for all i, where z is the full satisfying assignment
     let (mem_row, mem_col, L_row, L_col) = pk.S_repr.evaluation_oracles(&S, &r_outer_full, &z);
-    // P0-A3: after the evaluation oracles are built, the local padded shape `S`
+    // After the evaluation oracles are built, the local padded shape `S`
     // and the assignment `z` are no longer used (only `S.num_vars` is needed
     // later, saved above). Dropping `S` also frees the three sparse matrices and
     // their lazily-built SpMV precompute caches, which can exceed the dense
@@ -1230,7 +1226,6 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
       &mut transcript,
     )?;
 
-    // Total batched-inner claims: 2 inner (ABC + E) + 1 witness + the
     // Batched-inner claim layout. `prove_helper` places the memory-check slot
     // first, so its claims occupy coeffs `[0, MEM_CLAIMS)` and the inner (ABC, E)
     // and witness claims follow: ABC at `MEM_CLAIMS`, E at `MEM_CLAIMS + 1`,

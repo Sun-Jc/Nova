@@ -22,11 +22,10 @@
 //! fractional-sum sub-instances — a *table* side and an *access* side — so all
 //! four share one GKR depth `log N` and the frozen single-batched-tree verifier
 //! applies unchanged (it forbids uneven heights; here every side is exactly N
-//! because ppSNARK pads every memory-check column to N in setup — see
-//! `jcbase/ppsnark-pad-to-N.md`). A single 2N-leaf signed-multiplicity tree
-//! (hyperplonk's shape) would instead emit a `log(2N)` point, which cannot be
-//! rerandomized against the N-variable inner sumcheck; two N-leaf trees keep the
-//! point at `log N`. Instance order is fixed:
+//! because ppSNARK pads every memory-check column to N in setup). A single
+//! 2N-leaf signed-multiplicity tree would instead emit a `log(2N)` point, which
+//! cannot be rerandomized against the N-variable inner sumcheck; two N-leaf
+//! trees keep the point at `log N`. Instance order is fixed:
 //!
 //! | idx | name        | num       | den                         |
 //! |-----|-------------|-----------|-----------------------------|
@@ -48,9 +47,7 @@
 //! root_access = Σ ts/(T+r) − Σ 1/(W+r)`, which must vanish. In projective form
 //! that means the *sum's numerator* is zero (the denominator, a product of
 //! nonzero dens, cannot be), checked for the row pair `(0,1)` and the col pair
-//! `(2,3)`. (This is looser than hyperplonk's exact `num == 0` on one merged
-//! signed-multiplicity tree — audit item M1 — but equivalent for this padded
-//! encoding.)
+//! `(2,3)`.
 
 use crate::errors::NovaError;
 use crate::spartan::logup_gkr::fraction::Fraction;
@@ -149,7 +146,7 @@ impl<E: Engine> MemCheckOpenings<E> {
 /// Logup-GKR.
 ///
 /// These are exactly ppSNARK's padded memory-check columns (all length
-/// `N = 2^{log N}`; see `jcbase/ppsnark-pad-to-N.md`). [`build_input_layers`]
+/// `N = 2^{log N}`). [`build_input_layers`]
 /// turns them into the four GKR input layers, and [`prove`] consumes the
 /// witness, opening the subset named by [`MemCheckOpenings`] at the shared
 /// point. Field meanings match the four-sub-instance table in the module docs:
@@ -597,8 +594,7 @@ pub fn prove<E: Engine>(
 /// 3 (it interpolates every instance with `from_evals_deg3` and asserts all
 /// bundled instances share a degree), so [`Self::degree`] reports 3 and the
 /// quadratic evals carry a zero cubic coefficient — identical to how the E-claim
-/// rides in the degree-3 inner instance. Running outside `prove_helper` could
-/// reclaim the extra sample point (see HANDOFF O1).
+/// rides in the degree-3 inner instance.
 ///
 /// [`prove_helper`]: super::ppsnark
 pub struct RerandomizeSumcheckInstance<E: Engine> {
@@ -663,7 +659,7 @@ impl<E: Engine> SumcheckEngine<E> for RerandomizeSumcheckInstance<E> {
 
   fn degree(&self) -> usize {
     // True degree is 2 (eq · X); reported as 3 to ride in the degree-3
-    // prove_helper bundle. See the type docs and HANDOFF O1.
+    // prove_helper bundle. See the type docs.
     3
   }
 

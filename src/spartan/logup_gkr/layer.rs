@@ -3,9 +3,8 @@
 //! One [`Layer`] is a single level of a tree: two multilinear polynomials
 //! (numerator, denominator). The same type serves the input layer, every
 //! internal layer, and the output layer — they differ only in height (the
-//! coefficient length halves each level, `N → N/2 → … → 1`). This mirrors
-//! hyperplonk's single `Layer` type (`fractional_gkr/layer/mod.rs`), which has
-//! no separate input/output variants.
+//! coefficient length halves each level, `N → N/2 → … → 1`). The same `Layer`
+//! type serves all levels, with no separate input/output variants.
 //!
 //! Each logup instance (`row` / `col`) starts from one input `Layer` whose
 //! leaves are the projective cells `(num, den) = (ts, T+r)` on the table side
@@ -13,11 +12,11 @@
 //!
 //! # Endianness (critical): MSB-first, pairs are `i` and `i+n`
 //! Nova's MLEs are **MSB-first** (`bind_poly_var_top` folds the top variable by
-//! `split_at(len/2)`), the OPPOSITE of hyperplonk's LSB-first `2i / 2i+1`
-//! pairing. So a level's two children are the halves `x[i]` (top bit 0) and
-//! `x[i+n]` (top bit 1), `n = len/2` — NOT `x[2i]` / `x[2i+1]`. Folding this way
-//! keeps the tree consistent with Nova's sumcheck round order (`eval_point`
-//! challenges bind MSB→LSB), so the GKR point matches the sumcheck point.
+//! `split_at(len/2)`). So a level's two children are the halves `x[i]` (top bit
+//! 0) and `x[i+n]` (top bit 1), `n = len/2` — NOT `x[2i]` / `x[2i+1]`. Folding
+//! this way keeps the tree consistent with Nova's sumcheck round order
+//! (`eval_point` challenges bind MSB→LSB), so the GKR point matches the sumcheck
+//! point.
 
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::multilinear::MultilinearPolynomial;
@@ -49,12 +48,9 @@ const FOLD_PARALLEL_THRESHOLD: usize = 1 << 16;
 /// # Numerator/denominator convention (read before constructing)
 /// `num` is the **multiplicity** side (`ts` on the table side, `1` on the
 /// access side); `den` is the **fingerprint** side (`T+r` / `W+r`, never
-/// inverted). This is the SAME assignment as hyperplonk's
-/// `new_input_layer(data, multiplicity)` — but note hp's constructor takes
-/// `(data, multiplicity)` = `(den, num)`, the OPPOSITE positional order. To
-/// make the swap impossible, this type has **no positional constructor**:
-/// build it with field-init syntax so `num`/`den` are named explicitly, e.g.
-/// `Layer { num: ts, den: t_plus_r }`.
+/// inverted). To make an accidental swap impossible, this type has **no
+/// positional constructor**: build it with field-init syntax so `num`/`den` are
+/// named explicitly, e.g. `Layer { num: ts, den: t_plus_r }`.
 pub struct Layer<E: Engine> {
   /// Numerator = multiplicity (`ts` on the table side, `1` on the access side).
   pub num: MultilinearPolynomial<E::Scalar>,

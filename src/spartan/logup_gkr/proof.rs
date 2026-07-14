@@ -1,18 +1,12 @@
 //! Proof objects for the Logup-GKR fractional-sum argument.
 //!
-//! **Frozen interface** between prover and verifier. Stage 1 commits these with
-//! a real verifier and a placeholder prover; later stages fill in the prover
-//! without changing these shapes.
-//!
 //! # One batched tree, not N independent trees
-//! Mirrors the **primary** reference hyperplonk-logup-gkr
-//! (`fractional_gkr/layer/batch.rs`, `proof/{mod,claim}.rs`): the logup
-//! instances (`row`, `col`) are padded to a uniform height and folded through a
-//! **single** `BatchTree` with **one shared GKR depth**, so the evaluation
-//! point is shared *by construction*. There is no per-tree proof and no "assert
-//! the two points are equal" — an earlier design mistake (audit D1). Per layer,
-//! the instances' column pairs are batched into one sumcheck via a fresh `λ`.
-//! Sumcheck round polynomials use Nova's `CompressedUniPoly`.
+//! The logup instances (`row`, `col`) are padded to a uniform height and folded
+//! through a **single** `BatchTree` with **one shared GKR depth**, so the
+//! evaluation point is shared *by construction*. There is no per-tree proof and
+//! no "assert the two points are equal". Per layer, the instances' column pairs
+//! are batched into one sumcheck via a fresh `λ`. Sumcheck round polynomials use
+//! Nova's `CompressedUniPoly`.
 
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::polys::univariate::CompressedUniPoly;
@@ -31,8 +25,6 @@ pub type LayerClaim<E> = Fraction<<E as Engine>::Scalar>;
 
 /// The split (even/odd) final claim of one instance at one layer: the `left`
 /// and `right` child fractions `(nL,dL)` and `(nR,dR)`.
-///
-/// Mirrors hp `LayerFinalClaim{left, right}` (`proof/claim.rs:96`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct LayerFinalClaim<E: Engine> {
@@ -46,11 +38,10 @@ impl<E: Engine> LayerFinalClaim<E> {
   /// Builds from the four folded sumcheck evaluations `nL, nR, dL, dR`.
   ///
   /// WARNING: the layer sumcheck's `bound_evals` come out **interleaved** as
-  /// `[nL, dR, nR, dL]` (hp `prover/mod.rs:143-153`, matching the flattened
-  /// virtual-polynomial order `numerator_left, denominator_right,
-  /// numerator_right, denominator_left`). Map them explicitly —
-  /// `new(evals[0], evals[2], evals[3], evals[1])` — never slice `evals[0..4]`
-  /// into the parameters positionally.
+  /// `[nL, dR, nR, dL]` (matching the flattened virtual-polynomial order
+  /// `numerator_left, denominator_right, numerator_right, denominator_left`).
+  /// Map them explicitly — `new(evals[0], evals[2], evals[3], evals[1])` —
+  /// never slice `evals[0..4]` into the parameters positionally.
   pub fn new(nL: E::Scalar, nR: E::Scalar, dL: E::Scalar, dR: E::Scalar) -> Self {
     Self {
       left: Fraction::new(nL, dL),
@@ -92,12 +83,12 @@ pub struct LayerSumcheck<E: Engine> {
 /// `sumchecks.len() + 1 == final_claims.len()`.
 ///
 /// The per-layer batching challenge `λ` is **not** stored here: it is a
-/// Fiat-Shamir challenge the verifier re-samples fresh at each layer (hp
-/// `verifier.rs:39` — reusing one `λ` across layers would let the prover
-/// adaptively forge each layer's claims). Likewise `initial_claims` are not
-/// bound to committed data by this proof alone; soundness closes at the host's
-/// reconcile step, where the returned `openings` must match the fractions the
-/// host recomputes from its real `L_row`/`L_col` openings.
+/// Fiat-Shamir challenge the verifier re-samples fresh at each layer (reusing
+/// one `λ` across layers would let the prover adaptively forge each layer's
+/// claims). Likewise `initial_claims` are not bound to committed data by this
+/// proof alone; soundness closes at the host's reconcile step, where the
+/// returned `openings` must match the fractions the host recomputes from its
+/// real `L_row`/`L_col` openings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct LogupGkrProof<E: Engine> {
@@ -109,14 +100,14 @@ pub struct LogupGkrProof<E: Engine> {
   pub sumchecks: Vec<LayerSumcheck<E>>,
 }
 
-/// Verifier output — a **continuation token**, mirroring hp's opening claim
-/// (`proof/mod.rs:35`), with its point field renamed to Nova's `eval_point`.
+/// Verifier output — a **continuation token** carrying the shared opening
+/// claim, with its point field named Nova's `eval_point`.
 ///
 /// The host reads only [`Self::eval_point`] to build its merged PCS opening set;
 /// `openings` (the per-instance input-layer fractions the GKR reduced to, order
 /// `[row, col]`) is handed to the host's reconcile step, which is where the
 /// `0/den` zero-sum check lives — **not** inside the GKR verifier. See the host
-/// contract in [`crate::spartan::logup_gkr`] and `rerandomize-batch-explained.md`.
+/// contract in [`crate::spartan::logup_gkr`].
 #[derive(Clone, Debug)]
 pub struct LogupGkrOpeningClaim<E: Engine> {
   eval_point: Vec<E::Scalar>,

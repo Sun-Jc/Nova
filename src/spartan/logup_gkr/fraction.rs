@@ -41,8 +41,7 @@ impl<F: Field> Fraction<F> {
 
 /// Projective fraction addition (the 2-to-1 gate): `a/b + c/d = (a·d + c·b)/(b·d)`.
 ///
-/// Mirrors hp's `impl Add for Fraction`; `Fraction` is `Copy`, so `+` takes
-/// values with no cost.
+/// `Fraction` is `Copy`, so `+` takes values with no cost.
 impl<F: Field> Add for Fraction<F> {
   type Output = Self;
 
@@ -55,7 +54,7 @@ impl<F: Field> Add for Fraction<F> {
 }
 
 /// Sum of a sequence of fractions, folding from the identity `0/1`. Lets a whole
-/// tree level be reduced with `.sum()` (mirrors hp's `impl Sum for Fraction`).
+/// tree level be reduced with `.sum()`.
 impl<F: Field> Sum for Fraction<F> {
   fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
     iter.fold(Self::zero(), |a, b| a + b)

@@ -5,13 +5,13 @@
 //! commitments) with a fractional-sum GKR tree per logup instance (`row`,
 //! `col`). Projective fractions keep the circuit inversion-free, so the four
 //! inverse commitments — measured at ~4.17s of a 15.7s prove at 1M
-//! constraints (`perf-ppsnark-baseline.md`) — disappear.
+//! constraints — disappear.
 //!
 //! ## Module map
 //! - [`fraction`]: projective fraction + 2-to-1 gate (pure).
 //! - [`layer`]: the `Layer` type (one tree level: num/den MLEs).
-//! - [`proof`]: frozen proof/claim interface.
-//! - [`prover`]: stage-1 placeholder; reuses `prove_batched_cubic` later.
+//! - [`proof`]: proof/claim interface.
+//! - [`prover`]: fold-up + batched sumcheck prover.
 //! - [`verifier`]: fold-down + root check, emits the shared opening claim.
 //!
 //! ## Boundary with ppSNARK (host reconcile contract)
@@ -21,16 +21,12 @@
 //! **host** then:
 //! 1. rerandomizes `L_row`/`L_col` at `eval_point` into a sumcheck batched with
 //!    the inner sumcheck, and opens them (with the other columns) via HyperKZG
-//!    at the shared point (see `rerandomize-batch-explained.md`);
+//!    at the shared point;
 //! 2. recomputes each instance's fraction from its opened `L`/`addr`/`ts`
 //!    (`den = L·γ + addr + r`, `num = ts`) and checks it equals the matching
-//!    entry of `openings` — the analogue of hp `reconcile_openings` /
-//!    `eval_at_openings`;
+//!    entry of `openings`;
 //! 3. runs the `0/den` zero-sum balance check.
 //! Steps 2-3 are the host's job, never the GKR verifier's.
-//!
-//! References: hyperplonk-logup-gkr (primary) and lambdaworks `gkr-logup`
-//! (secondary); divergences are flagged at the use site.
 
 pub mod fraction;
 pub mod layer;

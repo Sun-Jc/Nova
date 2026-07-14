@@ -306,7 +306,7 @@ pub fn prove<E: Engine>(
     final_claims_by_layer.push(layer_finals);
   }
 
-  // Proof is ordered output→input (the order we produced), matching hp.
+  // Proof is ordered output→input (the order we produced).
   // openings = each instance's input-layer fraction at the final eval_point
   // (length num_vars); equals the last running claim by construction.
   let openings: Vec<LayerClaim<E>> = running
@@ -419,12 +419,7 @@ mod tests {
   }
 
   // Tamper-rejection with m >= 2: mutating per-instance final claims makes the
-  // verifier reject. NOTE: this is a general tamper test, NOT a discriminating
-  // C1 test — the offset below is also rejected under the old linear-lambda
-  // batching (caught by transcript binding + the gate's bilinearity). The
-  // lambda-batching was still changed to Horner (distinct powers per instance)
-  // to align with hp and remove the non-injective RLC; see
-  // jcbase/audit-verifier-vs-hp.md.
+  // verifier reject (caught by transcript binding + the gate's bilinearity).
   #[test]
   fn verify_rejects_complementary_instance_offset() {
     let inputs = [
