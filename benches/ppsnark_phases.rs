@@ -8,8 +8,8 @@
 //! peak RSS (`ru_maxrss`) at each phase boundary.
 //!
 //! Which memory-check path is measured depends on the build feature:
-//!   cargo bench --bench ppsnark_phases --features phase-profile
-//!   cargo bench --bench ppsnark_phases --features "phase-profile,logup-no-gkr"
+//!   cargo bench --bench ppsnark_phases --features "phase-profile,test-utils"
+//!   cargo bench --bench ppsnark_phases --features "phase-profile,test-utils,logup-no-gkr"
 //!
 //! Emit machine-readable JSON lines (one object per size) by setting
 //! `PHASE_JSON=1`.

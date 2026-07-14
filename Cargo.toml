@@ -76,7 +76,7 @@ harness = false
 [[bench]]
 name = "ppsnark_phases"
 harness = false
-required-features = ["phase-profile"]
+required-features = ["phase-profile", "test-utils"]
 
 [[bench]]
 name = "commit"
