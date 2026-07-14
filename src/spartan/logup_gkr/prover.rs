@@ -7,7 +7,7 @@
 //!
 //! It builds one equal-height tree per input, folds them leaf→root, and for each
 //! internal depth runs one transparent cubic sumcheck
-//! ([`prove_layer_sumcheck`]) reducing the merged fraction-sum claim to the next
+//! (`prove_layer_sumcheck`) reducing the merged fraction-sum claim to the next
 //! layer.
 //!
 //! ## Per-layer gate (the verifier's contract)

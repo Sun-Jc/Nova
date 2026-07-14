@@ -25,6 +25,7 @@
 //! 2. recomputes the four fractions from those claims (`num = ts` on the table
 //!    sides, `num = -1` on the access sides) and checks them against `openings`;
 //! 3. runs the `0/den` zero-sum balance check.
+//!
 //! Steps 2-3 are the host's job, never the GKR verifier's.
 
 pub mod fraction;

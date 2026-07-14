@@ -49,7 +49,7 @@
 use crate::errors::NovaError;
 use crate::spartan::logup_gkr::fraction::Fraction;
 use crate::spartan::logup_gkr::layer::Layer;
-use crate::spartan::logup_gkr::proof::{LayerFinalClaim, LogupGkrProof};
+use crate::spartan::logup_gkr::proof::LogupGkrProof;
 use crate::spartan::logup_gkr::verifier;
 use crate::spartan::polys::eq::EqPolynomial;
 use crate::spartan::polys::identity::IdentityPolynomial;
@@ -618,7 +618,7 @@ pub struct RerandomizeSumcheckInstance<E: Engine> {
   polys: Vec<MultilinearPolynomial<E::Scalar>>,
   /// Running claim per column (BDDT, eprint 2025/1117 §6.2).
   running_claims: Vec<E::Scalar>,
-  /// Saved `[p(0), 0, p(-1)]` per column, used by [`Self::bound`].
+  /// Saved `[p(0), 0, p(-1)]` per column, used by [`SumcheckEngine::bound`].
   saved_evals: Vec<[E::Scalar; 3]>,
   /// Set by [`SumcheckEngine::fuse_with_coeffs`]. Once the batch coefficients are
   /// known, the seven columns collapse into one random linear combination so the
@@ -636,7 +636,7 @@ struct FusedRerandomize<E: Engine> {
   poly: MultilinearPolynomial<E::Scalar>,
   /// `Σ_i coeffs[i] · claim_i`, the running claim of the combined column.
   running_claim: E::Scalar,
-  /// Saved `[p(0), 0, p(-1)]` of the combined column for [`Self::bound`].
+  /// Saved `[p(0), 0, p(-1)]` of the combined column for [`SumcheckEngine::bound`].
   saved: [E::Scalar; 3],
 }
 
@@ -789,6 +789,7 @@ mod tests {
   //! covers input-layer construction, reconcile, balance, and rerandomize claim
   //! ordering.
   use super::*;
+  use crate::spartan::logup_gkr::proof::LayerFinalClaim;
   use crate::traits::TranscriptEngineTrait;
 
   type E = crate::provider::Bn256EngineKZG;
