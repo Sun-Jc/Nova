@@ -294,6 +294,13 @@ pub fn verify<E: Engine>(
   if reduced.len() != NUM_SUB_INSTANCES {
     return Err(NovaError::InvalidNumInstances);
   }
+  // Bind GKR depth to the trusted `log N` from vk / outer challenge. The proof
+  // alone can claim any `final_claims.len()`; without this check a forged depth
+  // would panic inside `EqPolynomial::evaluate` (assert on length mismatch)
+  // rather than return `NovaError`.
+  if eval_point.len() != r_outer_full.len() {
+    return Err(NovaError::InvalidSumcheckProof);
+  }
 
   // (2) Recompute the four input-layer fractions from the claimed columns.
   // Pieces the verifier evaluates itself at eval_point:
@@ -454,16 +461,26 @@ pub fn verify_initial_claim<E: Engine>(data: &GkrProofData<E>, coeffs: &[E::Scal
 /// `Σ_i coeffs[RERAND_BASE + i] · eq(eval_point, r_inner_batched) ·
 /// column_i(r_inner_batched)`, mirroring the E claim. `rerand_col_evals` are the
 /// seven columns' values at `r_inner_batched` in RERAND order.
+///
+/// `eval_point` and `r_inner_batched` must share length `log N` (already enforced
+/// when [`verify`] / [`verify_pre_inner`] returned `eval_point`, and by the
+/// inner sumcheck round count). Mismatch returns [`NovaError`] instead of
+/// panicking in `EqPolynomial::evaluate`.
 pub fn verify_final_claim<E: Engine>(
   coeffs: &[E::Scalar],
   eval_point: &[E::Scalar],
   r_inner_batched: &[E::Scalar],
   rerand_col_evals: &[E::Scalar; NUM_RERAND_COLUMNS],
-) -> E::Scalar {
+) -> Result<E::Scalar, NovaError> {
+  if eval_point.len() != r_inner_batched.len() {
+    return Err(NovaError::InvalidSumcheckProof);
+  }
   let eq_gkr = EqPolynomial::new(eval_point.to_vec()).evaluate(r_inner_batched);
-  (0..NUM_RERAND_COLUMNS)
-    .map(|i| coeffs[RERAND_BASE + i] * eq_gkr * rerand_col_evals[i])
-    .sum()
+  Ok(
+    (0..NUM_RERAND_COLUMNS)
+      .map(|i| coeffs[RERAND_BASE + i] * eq_gkr * rerand_col_evals[i])
+      .sum(),
+  )
 }
 
 /// Prover output for the Logup-GKR memory-check.
@@ -963,6 +980,39 @@ mod tests {
       )
       .is_err(),
       "must reject all-(0,0) GKR against real column openings"
+    );
+  }
+
+  #[test]
+  fn rejects_wrong_gkr_depth() {
+    // Forged depth-1 proof against trusted `r_outer_full` of length 2: must
+    // return `Err`, not panic in `EqPolynomial::evaluate`.
+    let w = balanced_witness();
+    let mut tr_p = <E as Engine>::TE::new(b"memcheck-depth");
+    let out = prove::<E>(w.cols.clone(), w.gamma, w.r, &mut tr_p).expect("prove");
+    // Root `(0,1)` with children that gate to `(0,1)` so GKR accepts at depth 1.
+    let one = Fraction::new(Fr::ZERO, Fr::ONE);
+    let split = LayerFinalClaim {
+      left: one,
+      right: one, // gate = (0,1)+(0,1) = (0,1)
+    };
+    let forged = LogupGkrProof {
+      initial_claims: vec![one; 4],
+      final_claims: vec![vec![split; 4]],
+      sumchecks: vec![],
+    };
+    let mut tr_v = <E as Engine>::TE::new(b"memcheck-depth");
+    assert!(
+      verify::<E>(
+        &forged,
+        w.gamma,
+        w.r,
+        &w.r_outer_full,
+        &out.openings,
+        &mut tr_v
+      )
+      .is_err(),
+      "must reject GKR depth ≠ log N without panicking"
     );
   }
 

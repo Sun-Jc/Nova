@@ -1335,7 +1335,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E> for Relax
           &gkr_eval_point,
           &r_inner_batched,
           &rerand_col_evals,
-        )
+        )?
       };
 
       // Inner batched ABC claim: L_row * L_col * (val_A + c·val_B + c²·val_C)
