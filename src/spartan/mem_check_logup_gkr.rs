@@ -1028,4 +1028,56 @@ mod tests {
     assert_eq!(claims, out.openings.rerand_claims().to_vec());
     assert_eq!(claims.len(), NUM_RERAND_COLUMNS);
   }
+
+  #[cfg(feature = "evm")]
+  #[test]
+  fn gkr_proof_data_has_big_endian_scalar_golden_encoding() {
+    let data = GkrProofData::<E> {
+      proof: LogupGkrProof {
+        initial_claims: vec![Fraction::new(Fr::from(1), Fr::from(2))],
+        final_claims: vec![vec![LayerFinalClaim {
+          left: Fraction::new(Fr::from(3), Fr::from(4)),
+          right: Fraction::new(Fr::from(5), Fr::from(6)),
+        }]],
+        sumchecks: vec![],
+      },
+      rerand_claims: core::array::from_fn(|i| Fr::from(i as u64 + 7)),
+    };
+    let config = bincode::config::legacy()
+      .with_big_endian()
+      .with_fixed_int_encoding();
+    let bytes = bincode::serde::encode_to_vec(&data, config).expect("serialize GKR proof data");
+
+    fn push_len(bytes: &mut Vec<u8>, len: u64) {
+      bytes.extend_from_slice(&len.to_be_bytes());
+    }
+
+    fn push_scalar(bytes: &mut Vec<u8>, value: u8) {
+      bytes.extend_from_slice(&[0u8; 31]);
+      bytes.push(value);
+    }
+
+    let mut expected = Vec::new();
+    push_len(&mut expected, 1); // initial_claims
+    push_scalar(&mut expected, 1);
+    push_scalar(&mut expected, 2);
+    push_len(&mut expected, 1); // final_claims layers
+    push_len(&mut expected, 1); // final claims in the layer
+    for value in 3..=6 {
+      push_scalar(&mut expected, value);
+    }
+    push_len(&mut expected, 0); // sumchecks
+    for value in 7..=13 {
+      push_scalar(&mut expected, value);
+    }
+    assert_eq!(bytes, expected);
+
+    let (decoded, consumed): (GkrProofData<E>, usize) =
+      bincode::serde::decode_from_slice(&bytes, config).expect("deserialize GKR proof data");
+    assert_eq!(consumed, expected.len());
+    assert_eq!(
+      bincode::serde::encode_to_vec(decoded, config).expect("re-serialize GKR proof data"),
+      expected
+    );
+  }
 }

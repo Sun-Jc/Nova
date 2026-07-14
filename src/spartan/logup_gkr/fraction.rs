@@ -6,21 +6,26 @@
 //! root of why Logup-GKR avoids the inverse-polynomial commitments that the
 //! current ppSNARK memory-check pays for.
 
+use crate::traits::evm_serde::{CustomSerdeTrait, EvmCompatSerde};
 use core::iter::Sum;
 use core::ops::Add;
 use ff::Field;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 /// A projective fraction `numerator / denominator` over the engine scalar field.
 ///
 /// Equality of the represented rationals is cross-multiplicative
 /// (`a/b == c/d` iff `a·d == c·b`); this type does not normalize.
+#[serde_as]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(bound = "F: Serialize + for<'a> Deserialize<'a>")]
+#[serde(bound = "F: CustomSerdeTrait")]
 pub struct Fraction<F: Field> {
   /// Numerator.
+  #[serde_as(as = "EvmCompatSerde")]
   pub num: F,
   /// Denominator.
+  #[serde_as(as = "EvmCompatSerde")]
   pub den: F,
 }
 
@@ -58,5 +63,33 @@ impl<F: Field> Add for Fraction<F> {
 impl<F: Field> Sum for Fraction<F> {
   fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
     iter.fold(Self::zero(), |a, b| a + b)
+  }
+}
+
+#[cfg(all(test, feature = "evm"))]
+mod evm_serde_tests {
+  use super::Fraction;
+  use crate::traits::Engine;
+
+  type E = crate::provider::Bn256EngineKZG;
+  type Fr = <E as Engine>::Scalar;
+
+  #[test]
+  fn fraction_has_big_endian_scalar_golden_encoding() {
+    let fraction = Fraction::new(Fr::from(1), Fr::from(2));
+    let config = bincode::config::legacy()
+      .with_big_endian()
+      .with_fixed_int_encoding();
+    let bytes = bincode::serde::encode_to_vec(fraction, config).expect("serialize fraction");
+
+    let mut expected = [0u8; 64];
+    expected[31] = 1;
+    expected[63] = 2;
+    assert_eq!(bytes, expected);
+
+    let (decoded, consumed): (Fraction<Fr>, usize) =
+      bincode::serde::decode_from_slice(&bytes, config).expect("deserialize fraction");
+    assert_eq!(decoded, fraction);
+    assert_eq!(consumed, expected.len());
   }
 }
