@@ -138,7 +138,33 @@ impl<E: Engine> EqFactoredVirtualPolynomial<E> {
       let eq_suffix = eq_corner_natural(&self.taus[..cur]);
 
       // Inner = Σ_s eq_suffix[s] · R_slice(s, T), a degree-Dr polynomial.
+      // Fast path: every term is exactly 2 factors (Dr = 2), the ppSNARK case.
+      // Accumulate (c0, c1, c2) directly with no scratch alloc/zeroing.
+      let all_deg2 = dr == 2 && self.terms.iter().all(|(_, idxs)| idxs.len() == 2);
+
       let fold_range = |lo: usize, hi: usize| -> Vec<E::Scalar> {
+        if all_deg2 {
+          let (mut c0, mut c1, mut c2) = (E::Scalar::ZERO, E::Scalar::ZERO, E::Scalar::ZERO);
+          for suffix in lo..hi {
+            let w = eq_suffix[suffix];
+            if w == E::Scalar::ZERO {
+              continue;
+            }
+            for (coeff, idxs) in &self.terms {
+              let fa = &self.factors[idxs[0]];
+              let fb = &self.factors[idxs[1]];
+              let (a0, a1) = (fa[suffix], fa[suffix + half]);
+              let (b0, b1) = (fb[suffix], fb[suffix + half]);
+              let cw = *coeff * w;
+              // (a0 + a1 T)(b0 + b1 T) scaled by cw.
+              c0 += cw * a0 * b0;
+              c1 += cw * (a0 * b1 + a1 * b0);
+              c2 += cw * a1 * b1;
+            }
+          }
+          return vec![c0, c1, c2];
+        }
+        // Generic path (any Dr): convolution via multiply_by_linear.
         let mut inner = vec![E::Scalar::ZERO; dr + 1];
         let mut scratch = vec![E::Scalar::ZERO; dr + 1];
         for suffix in lo..hi {
