@@ -24,6 +24,10 @@ pub mod sumcheck;
 /// Proof-of-concept Projective SumCheck verifier (over the infinity hypercube).
 pub mod projective_sumcheck;
 
+/// Projective (coefficient-basis) ppSNARK, in progress; the original
+/// `ppsnark` module is kept intact.
+pub mod ppsnark_projective;
+
 pub use sumcheck::SumcheckEngine;
 
 use crate::{
