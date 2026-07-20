@@ -109,6 +109,22 @@ impl<Scalar: PrimeField> EqPolynomialProjective<Scalar> {
 
     evals
   }
+
+  /// Projective corner coefficients of the **masked** projective equality
+  /// polynomial: identical to [`evals`](Self::evals) but with the first
+  /// `2^num_masked_vars` corner coefficients set to zero.
+  ///
+  /// This is the coefficient-basis analogue of `MaskedEqPolynomial`, used by
+  /// ppSNARK's witness-bound sumcheck to certify that the padded tail of a
+  /// witness is zero: `0 = Σ_{2^m ≤ b < 2^n} eq̃(ρ,b)·W[b]`. As a structured
+  /// factor it may be materialized (Gruen's split does not apply to the masked
+  /// variant).
+  pub fn masked_evals(&self, num_masked_vars: usize) -> Vec<Scalar> {
+    let mut evals = self.evals();
+    let masked = 1usize << num_masked_vars;
+    evals[..masked].iter_mut().for_each(|e| *e = Scalar::ZERO);
+    evals
+  }
 }
 
 impl<Scalar: PrimeField> FromIterator<Scalar> for EqPolynomialProjective<Scalar> {
@@ -150,6 +166,16 @@ mod tests {
     assert_eq!(poly.evaluate(&r), expected);
   }
 
+  /// masked_evals zeroes exactly the first 2^m corners and keeps the rest.
+  fn masked_evals_with<F: PrimeField>() {
+    let rho = vec![F::from(2), F::from(3), F::from(5)];
+    let full = EqPolynomialProjective::<F>::new(rho.clone()).evals();
+    let masked = EqPolynomialProjective::<F>::new(rho).masked_evals(1);
+    assert_eq!(masked[0], F::ZERO);
+    assert_eq!(masked[1], F::ZERO);
+    assert_eq!(masked[2..], full[2..]);
+  }
+
   #[test]
   fn test_eq_projective() {
     corners_match_boolean_eq_with::<pallas::Scalar>();
@@ -158,5 +184,8 @@ mod tests {
     evaluate_with::<pallas::Scalar>();
     evaluate_with::<bn256::Scalar>();
     evaluate_with::<secp256k1::Scalar>();
+    masked_evals_with::<pallas::Scalar>();
+    masked_evals_with::<bn256::Scalar>();
+    masked_evals_with::<secp256k1::Scalar>();
   }
 }
