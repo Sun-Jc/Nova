@@ -1,0 +1,943 @@
+   Compiling nova-snark v0.57.0 (/Users/sunjc/Projects/NeonProofs/tmp/Nova)
+    Finished `bench` profile [optimized] target(s) in 8.86s
+     Running benches/commit.rs (target/release/deps/commit-e57725cc4fa9e418)
+Benchmarking halo2curves_commit_u1_8
+Benchmarking halo2curves_commit_u1_8: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u1_8: Collecting 10 samples in estimated 5.0002 s (989k iterations)
+Benchmarking halo2curves_commit_u1_8: Analyzing
+halo2curves_commit_u1_8 time:   [5.0581 µs 5.0703 µs 5.0810 µs]
+                        change: [-0.2149% -0.0236% +0.1789%] (p = 0.82 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u1_8
+Benchmarking nova_generic_commit_u1_8: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u1_8: Collecting 10 samples in estimated 5.0049 s (4895 iterations)
+Benchmarking nova_generic_commit_u1_8: Analyzing
+nova_generic_commit_u1_8
+                        time:   [1.0263 ms 1.0275 ms 1.0298 ms]
+                        change: [+271.52% +273.64% +277.39%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_specialized_commit_u1_8
+Benchmarking nova_specialized_commit_u1_8: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u1_8: Collecting 10 samples in estimated 5.0045 s (47k iterations)
+Benchmarking nova_specialized_commit_u1_8: Analyzing
+nova_specialized_commit_u1_8
+                        time:   [111.60 µs 111.73 µs 111.89 µs]
+                        change: [+3.5704% +3.8903% +4.2053%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking nova_batch_add_commit_u1_8
+Benchmarking nova_batch_add_commit_u1_8: Warming up for 3.0000 s
+Benchmarking nova_batch_add_commit_u1_8: Collecting 10 samples in estimated 5.0011 s (231k iterations)
+Benchmarking nova_batch_add_commit_u1_8: Analyzing
+nova_batch_add_commit_u1_8
+                        time:   [21.663 µs 21.712 µs 21.764 µs]
+                        change: [+2.0143% +2.3104% +2.5986%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+
+Benchmarking halo2curves_commit_u10_8
+Benchmarking halo2curves_commit_u10_8: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u10_8: Collecting 10 samples in estimated 5.0005 s (322k iterations)
+Benchmarking halo2curves_commit_u10_8: Analyzing
+halo2curves_commit_u10_8
+                        time:   [15.461 µs 15.465 µs 15.472 µs]
+                        change: [+2.9629% +3.2251% +3.4537%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_generic_commit_u10_8
+Benchmarking nova_generic_commit_u10_8: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u10_8: Collecting 10 samples in estimated 5.0027 s (4895 iterations)
+Benchmarking nova_generic_commit_u10_8: Analyzing
+nova_generic_commit_u10_8
+                        time:   [1.0250 ms 1.0270 ms 1.0294 ms]
+                        change: [+258.03% +259.42% +260.68%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u10_8
+Benchmarking nova_specialized_commit_u10_8: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u10_8: Collecting 10 samples in estimated 5.0048 s (15k iterations)
+Benchmarking nova_specialized_commit_u10_8: Analyzing
+nova_specialized_commit_u10_8
+                        time:   [312.32 µs 313.25 µs 314.15 µs]
+                        change: [+2.9250% +3.2508% +3.5519%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking halo2curves_commit_u16_8
+Benchmarking halo2curves_commit_u16_8: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u16_8: Collecting 10 samples in estimated 5.0008 s (272k iterations)
+Benchmarking halo2curves_commit_u16_8: Analyzing
+halo2curves_commit_u16_8
+                        time:   [18.156 µs 18.206 µs 18.303 µs]
+                        change: [-4.2383% -3.6809% -3.0014%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low mild
+  2 (20.00%) high severe
+
+Benchmarking nova_generic_commit_u16_8
+Benchmarking nova_generic_commit_u16_8: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u16_8: Collecting 10 samples in estimated 5.0348 s (5005 iterations)
+Benchmarking nova_generic_commit_u16_8: Analyzing
+nova_generic_commit_u16_8
+                        time:   [1.0061 ms 1.0068 ms 1.0081 ms]
+                        change: [+248.51% +252.71% +256.13%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_specialized_commit_u16_8
+Benchmarking nova_specialized_commit_u16_8: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u16_8: Collecting 10 samples in estimated 5.0011 s (37k iterations)
+Benchmarking nova_specialized_commit_u16_8: Analyzing
+nova_specialized_commit_u16_8
+                        time:   [139.43 µs 139.68 µs 140.14 µs]
+                        change: [+5.3532% +5.6517% +5.9788%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking halo2curves_commit_u32_8
+Benchmarking halo2curves_commit_u32_8: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u32_8: Collecting 10 samples in estimated 5.0013 s (142k iterations)
+Benchmarking halo2curves_commit_u32_8: Analyzing
+halo2curves_commit_u32_8
+                        time:   [34.921 µs 35.062 µs 35.200 µs]
+                        change: [+4.1100% +4.4471% +4.7965%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_generic_commit_u32_8
+Benchmarking nova_generic_commit_u32_8: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u32_8: Collecting 10 samples in estimated 5.0422 s (5060 iterations)
+Benchmarking nova_generic_commit_u32_8: Analyzing
+nova_generic_commit_u32_8
+                        time:   [995.11 µs 996.70 µs 998.04 µs]
+                        change: [+242.71% +243.32% +243.92%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking nova_specialized_commit_u32_8
+Benchmarking nova_specialized_commit_u32_8: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u32_8: Collecting 10 samples in estimated 5.0077 s (17k iterations)
+Benchmarking nova_specialized_commit_u32_8: Analyzing
+nova_specialized_commit_u32_8
+                        time:   [289.63 µs 290.12 µs 291.00 µs]
+                        change: [-42.952% -42.496% -42.054%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_u64_8
+Benchmarking halo2curves_commit_u64_8: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u64_8: Collecting 10 samples in estimated 5.0030 s (74k iterations)
+Benchmarking halo2curves_commit_u64_8: Analyzing
+halo2curves_commit_u64_8
+                        time:   [66.610 µs 66.659 µs 66.734 µs]
+                        change: [+0.3027% +0.4955% +0.6901%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u64_8
+Benchmarking nova_generic_commit_u64_8: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u64_8: Collecting 10 samples in estimated 5.0523 s (5060 iterations)
+Benchmarking nova_generic_commit_u64_8: Analyzing
+nova_generic_commit_u64_8
+                        time:   [992.81 µs 994.10 µs 996.61 µs]
+                        change: [+225.22% +226.29% +227.40%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking nova_specialized_commit_u64_8
+Benchmarking nova_specialized_commit_u64_8: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u64_8: Collecting 10 samples in estimated 5.0185 s (10k iterations)
+Benchmarking nova_specialized_commit_u64_8: Analyzing
+nova_specialized_commit_u64_8
+                        time:   [501.08 µs 502.20 µs 503.00 µs]
+                        change: [-45.335% -44.926% -44.489%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_random_8
+Benchmarking halo2curves_commit_random_8: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_random_8: Collecting 10 samples in estimated 5.0131 s (19k iterations)
+Benchmarking halo2curves_commit_random_8: Analyzing
+halo2curves_commit_random_8
+                        time:   [255.39 µs 255.63 µs 255.85 µs]
+                        change: [-2.1608% -1.8162% -1.5037%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low severe
+
+Benchmarking nova_generic_commit_random_8
+Benchmarking nova_generic_commit_random_8: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_random_8: Collecting 10 samples in estimated 5.0458 s (5060 iterations)
+Benchmarking nova_generic_commit_random_8: Analyzing
+nova_generic_commit_random_8
+                        time:   [1.0000 ms 1.0021 ms 1.0047 ms]
+                        change: [+139.25% +139.92% +140.48%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking halo2curves_commit_u1_1024
+Benchmarking halo2curves_commit_u1_1024: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u1_1024: Collecting 10 samples in estimated 5.0048 s (55k iterations)
+Benchmarking halo2curves_commit_u1_1024: Analyzing
+halo2curves_commit_u1_1024
+                        time:   [91.891 µs 92.665 µs 93.513 µs]
+                        change: [+0.5599% +2.1969% +4.1260%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u1_1024
+Benchmarking nova_generic_commit_u1_1024: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u1_1024: Collecting 10 samples in estimated 5.0069 s (13k iterations)
+Benchmarking nova_generic_commit_u1_1024: Analyzing
+nova_generic_commit_u1_1024
+                        time:   [380.60 µs 382.06 µs 383.09 µs]
+                        change: [-60.134% -59.999% -59.847%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u1_1024
+Benchmarking nova_specialized_commit_u1_1024: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u1_1024: Collecting 10 samples in estimated 5.0048 s (22k iterations)
+Benchmarking nova_specialized_commit_u1_1024: Analyzing
+nova_specialized_commit_u1_1024
+                        time:   [230.43 µs 230.86 µs 231.30 µs]
+                        change: [+3.1040% +3.5103% +3.9549%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_batch_add_commit_u1_1024
+Benchmarking nova_batch_add_commit_u1_1024: Warming up for 3.0000 s
+Benchmarking nova_batch_add_commit_u1_1024: Collecting 10 samples in estimated 5.0010 s (86k iterations)
+Benchmarking nova_batch_add_commit_u1_1024: Analyzing
+nova_batch_add_commit_u1_1024
+                        time:   [57.716 µs 57.954 µs 58.166 µs]
+                        change: [+3.3382% +3.7642% +4.1972%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_u10_1024
+Benchmarking halo2curves_commit_u10_1024: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u10_1024: Collecting 10 samples in estimated 5.0128 s (20k iterations)
+Benchmarking halo2curves_commit_u10_1024: Analyzing
+halo2curves_commit_u10_1024
+                        time:   [244.23 µs 244.98 µs 245.55 µs]
+                        change: [+0.7458% +1.0368% +1.3230%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u10_1024
+Benchmarking nova_generic_commit_u10_1024: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u10_1024: Collecting 10 samples in estimated 5.0142 s (9240 iterations)
+Benchmarking nova_generic_commit_u10_1024: Analyzing
+nova_generic_commit_u10_1024
+                        time:   [553.83 µs 558.55 µs 565.86 µs]
+                        change: [-47.000% -46.146% -44.970%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_specialized_commit_u10_1024
+Benchmarking nova_specialized_commit_u10_1024: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u10_1024: Collecting 10 samples in estimated 5.0087 s (7425 iterations)
+Benchmarking nova_specialized_commit_u10_1024: Analyzing
+nova_specialized_commit_u10_1024
+                        time:   [680.23 µs 683.64 µs 686.44 µs]
+                        change: [+1.9972% +2.5069% +3.0760%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking halo2curves_commit_u16_1024
+Benchmarking halo2curves_commit_u16_1024: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u16_1024: Collecting 10 samples in estimated 5.0065 s (18k iterations)
+Benchmarking halo2curves_commit_u16_1024: Analyzing
+halo2curves_commit_u16_1024
+                        time:   [284.70 µs 285.66 µs 286.30 µs]
+                        change: [-0.4266% -0.0358% +0.3492%] (p = 0.86 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u16_1024
+Benchmarking nova_generic_commit_u16_1024: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u16_1024: Collecting 10 samples in estimated 5.0323 s (8195 iterations)
+Benchmarking nova_generic_commit_u16_1024: Analyzing
+nova_generic_commit_u16_1024
+                        time:   [616.58 µs 618.32 µs 620.33 µs]
+                        change: [-43.702% -43.579% -43.457%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u16_1024
+Benchmarking nova_specialized_commit_u16_1024: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u16_1024: Collecting 10 samples in estimated 5.0066 s (11k iterations)
+Benchmarking nova_specialized_commit_u16_1024: Analyzing
+nova_specialized_commit_u16_1024
+                        time:   [446.84 µs 447.61 µs 448.57 µs]
+                        change: [-10.345% -10.013% -9.6812%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_u32_1024
+Benchmarking halo2curves_commit_u32_1024: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u32_1024: Collecting 10 samples in estimated 5.0075 s (13k iterations)
+Benchmarking halo2curves_commit_u32_1024: Analyzing
+halo2curves_commit_u32_1024
+                        time:   [387.90 µs 390.15 µs 391.68 µs]
+                        change: [+0.0165% +0.5987% +1.1472%] (p = 0.05 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u32_1024
+Benchmarking nova_generic_commit_u32_1024: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u32_1024: Collecting 10 samples in estimated 5.0403 s (5060 iterations)
+Benchmarking nova_generic_commit_u32_1024: Analyzing
+nova_generic_commit_u32_1024
+                        time:   [994.66 µs 996.01 µs 996.86 µs]
+                        change: [-17.623% -17.236% -16.932%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u32_1024
+Benchmarking nova_specialized_commit_u32_1024: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u32_1024: Collecting 10 samples in estimated 5.0169 s (6270 iterations)
+Benchmarking nova_specialized_commit_u32_1024: Analyzing
+nova_specialized_commit_u32_1024
+                        time:   [799.26 µs 799.93 µs 800.57 µs]
+                        change: [-29.670% -29.573% -29.453%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_u64_1024
+Benchmarking halo2curves_commit_u64_1024: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u64_1024: Collecting 10 samples in estimated 5.0288 s (8195 iterations)
+Benchmarking halo2curves_commit_u64_1024: Analyzing
+halo2curves_commit_u64_1024
+                        time:   [614.10 µs 617.78 µs 620.56 µs]
+                        change: [+0.0327% +0.4505% +0.8819%] (p = 0.07 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u64_1024
+Benchmarking nova_generic_commit_u64_1024: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u64_1024: Collecting 10 samples in estimated 5.0391 s (3135 iterations)
+Benchmarking nova_generic_commit_u64_1024: Analyzing
+nova_generic_commit_u64_1024
+                        time:   [1.6008 ms 1.6089 ms 1.6227 ms]
+                        change: [+14.139% +14.723% +15.434%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_specialized_commit_u64_1024
+Benchmarking nova_specialized_commit_u64_1024: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u64_1024: Collecting 10 samples in estimated 5.0632 s (3740 iterations)
+Benchmarking nova_specialized_commit_u64_1024: Analyzing
+nova_specialized_commit_u64_1024
+                        time:   [1.3527 ms 1.3555 ms 1.3596 ms]
+                        change: [-34.654% -34.484% -34.302%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_random_1024
+Benchmarking halo2curves_commit_random_1024: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_random_1024: Collecting 10 samples in estimated 5.0104 s (2365 iterations)
+Benchmarking halo2curves_commit_random_1024: Analyzing
+halo2curves_commit_random_1024
+                        time:   [2.1172 ms 2.1220 ms 2.1274 ms]
+                        change: [-1.0885% -0.1086% +0.8484%] (p = 0.85 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_random_1024
+Benchmarking nova_generic_commit_random_1024: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_random_1024: Collecting 10 samples in estimated 5.0993 s (2310 iterations)
+Benchmarking nova_generic_commit_random_1024: Analyzing
+nova_generic_commit_random_1024
+                        time:   [2.2115 ms 2.2145 ms 2.2204 ms]
+                        change: [-14.285% -13.529% -12.273%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking halo2curves_commit_u1_32768
+Benchmarking halo2curves_commit_u1_32768: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u1_32768: Collecting 10 samples in estimated 5.1213 s (880 iterations)
+Benchmarking halo2curves_commit_u1_32768: Analyzing
+halo2curves_commit_u1_32768
+                        time:   [5.7755 ms 5.7923 ms 5.8194 ms]
+                        change: [+0.4289% +0.9514% +1.5183%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u1_32768
+Benchmarking nova_generic_commit_u1_32768: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u1_32768: Collecting 10 samples in estimated 5.0664 s (4180 iterations)
+Benchmarking nova_generic_commit_u1_32768: Analyzing
+nova_generic_commit_u1_32768
+                        time:   [1.2233 ms 1.2293 ms 1.2372 ms]
+                        change: [-68.816% -68.672% -68.518%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u1_32768
+Benchmarking nova_specialized_commit_u1_32768: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u1_32768: Collecting 10 samples in estimated 5.0257 s (6655 iterations)
+Benchmarking nova_specialized_commit_u1_32768: Analyzing
+nova_specialized_commit_u1_32768
+                        time:   [763.55 µs 775.11 µs 796.12 µs]
+                        change: [+2.4504% +4.4651% +6.9378%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_batch_add_commit_u1_32768
+Benchmarking nova_batch_add_commit_u1_32768: Warming up for 3.0000 s
+Benchmarking nova_batch_add_commit_u1_32768: Collecting 10 samples in estimated 5.0238 s (7975 iterations)
+Benchmarking nova_batch_add_commit_u1_32768: Analyzing
+nova_batch_add_commit_u1_32768
+                        time:   [628.57 µs 629.92 µs 630.84 µs]
+                        change: [-0.5119% +0.7453% +1.8829%] (p = 0.27 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+
+Benchmarking halo2curves_commit_u10_32768
+Benchmarking halo2curves_commit_u10_32768: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u10_32768: Collecting 10 samples in estimated 5.3078 s (880 iterations)
+Benchmarking halo2curves_commit_u10_32768: Analyzing
+halo2curves_commit_u10_32768
+                        time:   [6.0151 ms 6.0374 ms 6.0653 ms]
+                        change: [-5.0027% -3.4815% -2.0239%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_generic_commit_u10_32768
+Benchmarking nova_generic_commit_u10_32768: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u10_32768: Collecting 10 samples in estimated 5.0510 s (1760 iterations)
+Benchmarking nova_generic_commit_u10_32768: Analyzing
+nova_generic_commit_u10_32768
+                        time:   [2.8546 ms 2.8837 ms 2.9159 ms]
+                        change: [-54.267% -53.796% -53.303%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u10_32768
+Benchmarking nova_specialized_commit_u10_32768: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u10_32768: Collecting 10 samples in estimated 5.0714 s (2915 iterations)
+Benchmarking nova_specialized_commit_u10_32768: Analyzing
+nova_specialized_commit_u10_32768
+                        time:   [1.7331 ms 1.7365 ms 1.7389 ms]
+                        change: [+0.6091% +1.4090% +2.1016%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking halo2curves_commit_u16_32768
+Benchmarking halo2curves_commit_u16_32768: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u16_32768: Collecting 10 samples in estimated 5.1420 s (550 iterations)
+Benchmarking halo2curves_commit_u16_32768: Analyzing
+halo2curves_commit_u16_32768
+                        time:   [9.3796 ms 9.4007 ms 9.4255 ms]
+                        change: [-1.4318% -0.5657% +0.2038%] (p = 0.22 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+
+Benchmarking nova_generic_commit_u16_32768
+Benchmarking nova_generic_commit_u16_32768: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u16_32768: Collecting 10 samples in estimated 5.0407 s (1485 iterations)
+Benchmarking nova_generic_commit_u16_32768: Analyzing
+nova_generic_commit_u16_32768
+                        time:   [3.3874 ms 3.3978 ms 3.4038 ms]
+                        change: [-47.336% -47.063% -46.797%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u16_32768
+Benchmarking nova_specialized_commit_u16_32768: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u16_32768: Collecting 10 samples in estimated 5.0963 s (2090 iterations)
+Benchmarking nova_specialized_commit_u16_32768: Analyzing
+nova_specialized_commit_u16_32768
+                        time:   [2.4223 ms 2.4307 ms 2.4411 ms]
+                        change: [-14.411% -13.964% -13.432%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking halo2curves_commit_u32_32768
+Benchmarking halo2curves_commit_u32_32768: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u32_32768: Collecting 10 samples in estimated 5.1990 s (825 iterations)
+Benchmarking halo2curves_commit_u32_32768: Analyzing
+halo2curves_commit_u32_32768
+                        time:   [6.2481 ms 6.2769 ms 6.3096 ms]
+                        change: [-0.6796% +0.0516% +0.8459%] (p = 0.91 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_generic_commit_u32_32768
+Benchmarking nova_generic_commit_u32_32768: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u32_32768: Collecting 10 samples in estimated 5.2880 s (990 iterations)
+Benchmarking nova_generic_commit_u32_32768: Analyzing
+nova_generic_commit_u32_32768
+                        time:   [5.3155 ms 5.3563 ms 5.3934 ms]
+                        change: [-36.516% -36.142% -35.766%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u32_32768
+Benchmarking nova_specialized_commit_u32_32768: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u32_32768: Collecting 10 samples in estimated 5.0675 s (1155 iterations)
+Benchmarking nova_specialized_commit_u32_32768: Analyzing
+nova_specialized_commit_u32_32768
+                        time:   [4.3850 ms 4.4065 ms 4.4269 ms]
+                        change: [-7.0853% -6.6883% -6.2895%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_u64_32768
+Benchmarking halo2curves_commit_u64_32768: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u64_32768: Collecting 10 samples in estimated 5.0515 s (770 iterations)
+Benchmarking halo2curves_commit_u64_32768: Analyzing
+halo2curves_commit_u64_32768
+                        time:   [6.5094 ms 6.5246 ms 6.5412 ms]
+                        change: [-0.8640% -0.3909% +0.0757%] (p = 0.13 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u64_32768
+Benchmarking nova_generic_commit_u64_32768: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u64_32768: Collecting 10 samples in estimated 5.2104 s (550 iterations)
+Benchmarking nova_generic_commit_u64_32768: Analyzing
+nova_generic_commit_u64_32768
+                        time:   [9.4421 ms 9.4918 ms 9.5506 ms]
+                        change: [-22.599% -21.971% -21.321%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u64_32768
+Benchmarking nova_specialized_commit_u64_32768: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u64_32768: Collecting 10 samples in estimated 5.2123 s (605 iterations)
+Benchmarking nova_specialized_commit_u64_32768: Analyzing
+nova_specialized_commit_u64_32768
+                        time:   [8.5721 ms 8.6198 ms 8.6517 ms]
+                        change: [-7.6519% -6.9018% -6.2129%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_random_32768
+Benchmarking halo2curves_commit_random_32768: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_random_32768: Collecting 10 samples in estimated 5.4702 s (440 iterations)
+Benchmarking halo2curves_commit_random_32768: Analyzing
+halo2curves_commit_random_32768
+                        time:   [12.317 ms 12.412 ms 12.528 ms]
+                        change: [-1.0414% +0.3017% +1.8910%] (p = 0.70 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+
+Benchmarking nova_generic_commit_random_32768
+Benchmarking nova_generic_commit_random_32768: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_random_32768: Collecting 10 samples in estimated 5.6938 s (220 iterations)
+Benchmarking nova_generic_commit_random_32768: Analyzing
+nova_generic_commit_random_32768
+                        time:   [25.739 ms 25.854 ms 25.950 ms]
+                        change: [-18.372% -17.028% -15.735%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_u1_1048576
+Benchmarking halo2curves_commit_u1_1048576: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 8.0s or enable flat sampling.
+Benchmarking halo2curves_commit_u1_1048576: Collecting 10 samples in estimated 8.0395 s (55 iterations)
+Benchmarking halo2curves_commit_u1_1048576: Analyzing
+halo2curves_commit_u1_1048576
+                        time:   [144.98 ms 145.33 ms 145.70 ms]
+                        change: [+0.7503% +1.2856% +1.8284%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u1_1048576
+Benchmarking nova_generic_commit_u1_1048576: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u1_1048576: Collecting 10 samples in estimated 5.6902 s (275 iterations)
+Benchmarking nova_generic_commit_u1_1048576: Analyzing
+nova_generic_commit_u1_1048576
+                        time:   [20.632 ms 20.698 ms 20.764 ms]
+                        change: [-55.145% -54.615% -54.050%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+Benchmarking nova_specialized_commit_u1_1048576
+Benchmarking nova_specialized_commit_u1_1048576: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u1_1048576: Collecting 10 samples in estimated 5.3073 s (330 iterations)
+Benchmarking nova_specialized_commit_u1_1048576: Analyzing
+nova_specialized_commit_u1_1048576
+                        time:   [16.033 ms 16.079 ms 16.116 ms]
+                        change: [+3.4935% +4.3135% +5.0214%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+
+Benchmarking nova_batch_add_commit_u1_1048576
+Benchmarking nova_batch_add_commit_u1_1048576: Warming up for 3.0000 s
+Benchmarking nova_batch_add_commit_u1_1048576: Collecting 10 samples in estimated 5.7575 s (385 iterations)
+Benchmarking nova_batch_add_commit_u1_1048576: Analyzing
+nova_batch_add_commit_u1_1048576
+                        time:   [14.950 ms 14.999 ms 15.026 ms]
+                        change: [+3.5888% +4.2607% +4.9041%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+
+Benchmarking halo2curves_commit_u10_1048576
+Benchmarking halo2curves_commit_u10_1048576: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 8.5s or enable flat sampling.
+Benchmarking halo2curves_commit_u10_1048576: Collecting 10 samples in estimated 8.5407 s (55 iterations)
+Benchmarking halo2curves_commit_u10_1048576: Analyzing
+halo2curves_commit_u10_1048576
+                        time:   [154.77 ms 155.20 ms 155.51 ms]
+                        change: [+0.1167% +0.8999% +1.6406%] (p = 0.04 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u10_1048576
+Benchmarking nova_generic_commit_u10_1048576: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u10_1048576: Collecting 10 samples in estimated 6.0490 s (165 iterations)
+Benchmarking nova_generic_commit_u10_1048576: Analyzing
+nova_generic_commit_u10_1048576
+                        time:   [36.340 ms 36.549 ms 36.853 ms]
+                        change: [-46.530% -45.672% -44.983%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u10_1048576
+Benchmarking nova_specialized_commit_u10_1048576: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u10_1048576: Collecting 10 samples in estimated 6.2314 s (220 iterations)
+Benchmarking nova_specialized_commit_u10_1048576: Analyzing
+nova_specialized_commit_u10_1048576
+                        time:   [27.689 ms 27.816 ms 28.021 ms]
+                        change: [-0.5562% +1.0819% +2.7856%] (p = 0.24 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_u16_1048576
+Benchmarking halo2curves_commit_u16_1048576: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u16_1048576: Collecting 10 samples in estimated 7.0232 s (30 iterations)
+Benchmarking halo2curves_commit_u16_1048576: Analyzing
+halo2curves_commit_u16_1048576
+                        time:   [233.15 ms 234.03 ms 234.98 ms]
+                        change: [-0.1869% +0.4589% +1.0806%] (p = 0.20 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 10 measurements (30.00%)
+  2 (20.00%) low mild
+  1 (10.00%) high mild
+
+Benchmarking nova_generic_commit_u16_1048576
+Benchmarking nova_generic_commit_u16_1048576: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u16_1048576: Collecting 10 samples in estimated 7.4689 s (110 iterations)
+Benchmarking nova_generic_commit_u16_1048576: Analyzing
+nova_generic_commit_u16_1048576
+                        time:   [66.968 ms 67.278 ms 67.777 ms]
+                        change: [-27.341% -25.423% -23.771%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u16_1048576
+Benchmarking nova_specialized_commit_u16_1048576: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u16_1048576: Collecting 10 samples in estimated 5.6678 s (110 iterations)
+Benchmarking nova_specialized_commit_u16_1048576: Analyzing
+nova_specialized_commit_u16_1048576
+                        time:   [50.782 ms 51.103 ms 51.356 ms]
+                        change: [-9.2067% -8.0197% -6.9012%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_u32_1048576
+Benchmarking halo2curves_commit_u32_1048576: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_u32_1048576: Collecting 10 samples in estimated 5.1681 s (20 iterations)
+Benchmarking halo2curves_commit_u32_1048576: Analyzing
+halo2curves_commit_u32_1048576
+                        time:   [257.00 ms 257.69 ms 258.39 ms]
+                        change: [+0.0383% +0.5053% +0.9430%] (p = 0.05 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u32_1048576
+Benchmarking nova_generic_commit_u32_1048576: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 6.3s or enable flat sampling.
+Benchmarking nova_generic_commit_u32_1048576: Collecting 10 samples in estimated 6.2932 s (55 iterations)
+Benchmarking nova_generic_commit_u32_1048576: Analyzing
+nova_generic_commit_u32_1048576
+                        time:   [112.94 ms 113.66 ms 114.72 ms]
+                        change: [-2.0037% -0.9718% +0.0766%] (p = 0.11 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_specialized_commit_u32_1048576
+Benchmarking nova_specialized_commit_u32_1048576: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 5.3s or enable flat sampling.
+Benchmarking nova_specialized_commit_u32_1048576: Collecting 10 samples in estimated 5.2968 s (55 iterations)
+Benchmarking nova_specialized_commit_u32_1048576: Analyzing
+nova_specialized_commit_u32_1048576
+                        time:   [95.694 ms 96.058 ms 96.512 ms]
+                        change: [-0.4613% +1.1745% +2.8778%] (p = 0.21 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high severe
+
+Benchmarking halo2curves_commit_u64_1048576
+Benchmarking halo2curves_commit_u64_1048576: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 9.2s or enable flat sampling.
+Benchmarking halo2curves_commit_u64_1048576: Collecting 10 samples in estimated 9.2205 s (55 iterations)
+Benchmarking halo2curves_commit_u64_1048576: Analyzing
+halo2curves_commit_u64_1048576
+                        time:   [168.04 ms 168.53 ms 168.94 ms]
+                        change: [+0.2619% +0.8593% +1.4572%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_u64_1048576
+Benchmarking nova_generic_commit_u64_1048576: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u64_1048576: Collecting 10 samples in estimated 6.0461 s (30 iterations)
+Benchmarking nova_generic_commit_u64_1048576: Analyzing
+nova_generic_commit_u64_1048576
+                        time:   [196.81 ms 197.73 ms 198.85 ms]
+                        change: [+4.8521% +5.7639% +6.7182%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u64_1048576
+Benchmarking nova_specialized_commit_u64_1048576: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u64_1048576: Collecting 10 samples in estimated 5.5954 s (30 iterations)
+Benchmarking nova_specialized_commit_u64_1048576: Analyzing
+nova_specialized_commit_u64_1048576
+                        time:   [187.00 ms 189.35 ms 191.63 ms]
+                        change: [+0.7872% +2.3528% +3.9617%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking halo2curves_commit_random_1048576
+Benchmarking halo2curves_commit_random_1048576: Warming up for 3.0000 s
+Benchmarking halo2curves_commit_random_1048576: Collecting 10 samples in estimated 6.4634 s (20 iterations)
+Benchmarking halo2curves_commit_random_1048576: Analyzing
+halo2curves_commit_random_1048576
+                        time:   [322.70 ms 323.76 ms 324.77 ms]
+                        change: [+0.1396% +0.6318% +1.1270%] (p = 0.02 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_random_1048576
+Benchmarking nova_generic_commit_random_1048576: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 5.6s.
+Benchmarking nova_generic_commit_random_1048576: Collecting 10 samples in estimated 5.5728 s (10 iterations)
+Benchmarking nova_generic_commit_random_1048576: Analyzing
+nova_generic_commit_random_1048576
+                        time:   [542.98 ms 546.00 ms 549.16 ms]
+                        change: [-4.9747% -4.2937% -3.6343%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_u1_16777216
+Benchmarking halo2curves_commit_u1_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 22.7s.
+Benchmarking halo2curves_commit_u1_16777216: Collecting 10 samples in estimated 22.681 s (10 iterations)
+Benchmarking halo2curves_commit_u1_16777216: Analyzing
+halo2curves_commit_u1_16777216
+                        time:   [2.2062 s 2.2193 s 2.2362 s]
+                        change: [-1.4807% -0.2761% +0.9185%] (p = 0.67 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high severe
+
+Benchmarking nova_generic_commit_u1_16777216
+Benchmarking nova_generic_commit_u1_16777216: Warming up for 3.0000 s
+Benchmarking nova_generic_commit_u1_16777216: Collecting 10 samples in estimated 5.0842 s (20 iterations)
+Benchmarking nova_generic_commit_u1_16777216: Analyzing
+nova_generic_commit_u1_16777216
+                        time:   [250.68 ms 252.32 ms 254.43 ms]
+                        change: [-29.297% -28.589% -27.799%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u1_16777216
+Benchmarking nova_specialized_commit_u1_16777216: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u1_16777216: Collecting 10 samples in estimated 5.6245 s (30 iterations)
+Benchmarking nova_specialized_commit_u1_16777216: Analyzing
+nova_specialized_commit_u1_16777216
+                        time:   [189.66 ms 190.94 ms 192.16 ms]
+                        change: [-2.5084% -1.1170% +0.2675%] (p = 0.15 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_batch_add_commit_u1_16777216
+Benchmarking nova_batch_add_commit_u1_16777216: Warming up for 3.0000 s
+Benchmarking nova_batch_add_commit_u1_16777216: Collecting 10 samples in estimated 5.4679 s (30 iterations)
+Benchmarking nova_batch_add_commit_u1_16777216: Analyzing
+nova_batch_add_commit_u1_16777216
+                        time:   [183.23 ms 185.34 ms 187.46 ms]
+                        change: [-1.5943% -0.2206% +1.3215%] (p = 0.78 > 0.05)
+                        No change in performance detected.
+
+Benchmarking halo2curves_commit_u10_16777216
+Benchmarking halo2curves_commit_u10_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 24.0s.
+Benchmarking halo2curves_commit_u10_16777216: Collecting 10 samples in estimated 24.010 s (10 iterations)
+Benchmarking halo2curves_commit_u10_16777216: Analyzing
+halo2curves_commit_u10_16777216
+                        time:   [2.4000 s 2.4185 s 2.4396 s]
+                        change: [-0.9858% +0.2029% +1.3880%] (p = 0.76 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u10_16777216
+Benchmarking nova_generic_commit_u10_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 5.4s.
+Benchmarking nova_generic_commit_u10_16777216: Collecting 10 samples in estimated 5.4457 s (10 iterations)
+Benchmarking nova_generic_commit_u10_16777216: Analyzing
+nova_generic_commit_u10_16777216
+                        time:   [543.23 ms 547.81 ms 552.49 ms]
+                        change: [-20.995% -20.052% -19.112%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u10_16777216
+Benchmarking nova_specialized_commit_u10_16777216: Warming up for 3.0000 s
+Benchmarking nova_specialized_commit_u10_16777216: Collecting 10 samples in estimated 7.1156 s (20 iterations)
+Benchmarking nova_specialized_commit_u10_16777216: Analyzing
+nova_specialized_commit_u10_16777216
+                        time:   [354.13 ms 355.54 ms 356.93 ms]
+                        change: [-3.8006% -3.0149% -2.3064%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_u16_16777216
+Benchmarking halo2curves_commit_u16_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 23.6s.
+Benchmarking halo2curves_commit_u16_16777216: Collecting 10 samples in estimated 23.606 s (10 iterations)
+Benchmarking halo2curves_commit_u16_16777216: Analyzing
+halo2curves_commit_u16_16777216
+                        time:   [2.3255 s 2.3451 s 2.3646 s]
+                        change: [-0.2734% +0.8197% +2.0283%] (p = 0.21 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u16_16777216
+Benchmarking nova_generic_commit_u16_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 8.3s.
+Benchmarking nova_generic_commit_u16_16777216: Collecting 10 samples in estimated 8.3248 s (10 iterations)
+Benchmarking nova_generic_commit_u16_16777216: Analyzing
+nova_generic_commit_u16_16777216
+                        time:   [829.38 ms 833.97 ms 839.32 ms]
+                        change: [-14.754% -13.884% -12.974%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking nova_specialized_commit_u16_16777216
+Benchmarking nova_specialized_commit_u16_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 5.9s.
+Benchmarking nova_specialized_commit_u16_16777216: Collecting 10 samples in estimated 5.8637 s (10 iterations)
+Benchmarking nova_specialized_commit_u16_16777216: Analyzing
+nova_specialized_commit_u16_16777216
+                        time:   [581.74 ms 587.98 ms 594.35 ms]
+                        change: [-5.1334% -3.2795% -1.6513%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking halo2curves_commit_u32_16777216
+Benchmarking halo2curves_commit_u32_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 23.6s.
+Benchmarking halo2curves_commit_u32_16777216: Collecting 10 samples in estimated 23.589 s (10 iterations)
+Benchmarking halo2curves_commit_u32_16777216: Analyzing
+halo2curves_commit_u32_16777216
+                        time:   [2.3684 s 2.3881 s 2.4096 s]
+                        change: [-0.7986% +0.4061% +1.5392%] (p = 0.52 > 0.05)
+                        No change in performance detected.
+
+Benchmarking nova_generic_commit_u32_16777216
+Benchmarking nova_generic_commit_u32_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 16.2s.
+Benchmarking nova_generic_commit_u32_16777216: Collecting 10 samples in estimated 16.175 s (10 iterations)
+Benchmarking nova_generic_commit_u32_16777216: Analyzing
+nova_generic_commit_u32_16777216
+                        time:   [1.6102 s 1.6153 s 1.6216 s]
+                        change: [+13.985% +14.799% +15.613%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking nova_specialized_commit_u32_16777216
+Benchmarking nova_specialized_commit_u32_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 13.9s.
+Benchmarking nova_specialized_commit_u32_16777216: Collecting 10 samples in estimated 13.939 s (10 iterations)
+Benchmarking nova_specialized_commit_u32_16777216: Analyzing
+nova_specialized_commit_u32_16777216
+                        time:   [1.3952 s 1.4027 s 1.4110 s]
+                        change: [-1.4866% -0.8175% -0.1046%] (p = 0.05 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_u64_16777216
+Benchmarking halo2curves_commit_u64_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 24.7s.
+Benchmarking halo2curves_commit_u64_16777216: Collecting 10 samples in estimated 24.707 s (10 iterations)
+Benchmarking halo2curves_commit_u64_16777216: Analyzing
+halo2curves_commit_u64_16777216
+                        time:   [2.4619 s 2.4797 s 2.4944 s]
+                        change: [-0.0034% +1.0375% +2.0881%] (p = 0.08 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) low mild
+
+Benchmarking nova_generic_commit_u64_16777216
+Benchmarking nova_generic_commit_u64_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 29.5s.
+Benchmarking nova_generic_commit_u64_16777216: Collecting 10 samples in estimated 29.527 s (10 iterations)
+Benchmarking nova_generic_commit_u64_16777216: Analyzing
+nova_generic_commit_u64_16777216
+                        time:   [3.0125 s 3.0216 s 3.0295 s]
+                        change: [+35.677% +36.526% +37.460%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking nova_specialized_commit_u64_16777216
+Benchmarking nova_specialized_commit_u64_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 28.6s.
+Benchmarking nova_specialized_commit_u64_16777216: Collecting 10 samples in estimated 28.576 s (10 iterations)
+Benchmarking nova_specialized_commit_u64_16777216: Analyzing
+nova_specialized_commit_u64_16777216
+                        time:   [2.8375 s 2.8513 s 2.8673 s]
+                        change: [-1.4413% -0.8373% -0.1760%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+Benchmarking halo2curves_commit_random_16777216
+Benchmarking halo2curves_commit_random_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 56.1s.
+Benchmarking halo2curves_commit_random_16777216: Collecting 10 samples in estimated 56.074 s (10 iterations)
+Benchmarking halo2curves_commit_random_16777216: Analyzing
+halo2curves_commit_random_16777216
+                        time:   [5.5193 s 5.5289 s 5.5379 s]
+                        change: [+0.1607% +0.3471% +0.5429%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking nova_generic_commit_random_16777216
+Benchmarking nova_generic_commit_random_16777216: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 75.9s.
+Benchmarking nova_generic_commit_random_16777216: Collecting 10 samples in estimated 75.917 s (10 iterations)
+Benchmarking nova_generic_commit_random_16777216: Analyzing
+nova_generic_commit_random_16777216
+                        time:   [7.4010 s 7.4471 s 7.4853 s]
+                        change: [-2.6447% -1.8046% -0.9829%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+
