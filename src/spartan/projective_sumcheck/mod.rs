@@ -39,10 +39,14 @@
 //! Spartan sumcheck engine.
 //!
 //! Module layout:
+//! - [`prover`] — the Phase-1 dense `D=1` reference oracle
+//!   ([`prove_dense_multilinear`]); narrow by design, not a general prover.
 //! - [`verifier`] — the round-by-round reduction ([`verify`]).
 
+pub mod prover;
 pub mod verifier;
 
+pub use prover::{prove_dense_multilinear, ProjectiveSumcheckProverOutput};
 pub use verifier::{verify, ProjectiveSumcheckReduction};
 
 #[cfg(test)]
@@ -50,69 +54,13 @@ mod tests {
   use super::*;
   use crate::{
     provider::PallasEngine,
-    spartan::{
-      polys::univariate::{CompressedUniPoly, UniPoly},
-      sumcheck::SumcheckProof,
-    },
+    spartan::{polys::univariate::UniPoly, sumcheck::SumcheckProof},
     traits::{Engine, TranscriptEngineTrait},
   };
   use ff::Field;
 
   type E = PallasEngine;
   type Fr = <E as Engine>::Scalar;
-
-  /// A tiny, obviously-correct dense reference prover over `{0,∞}^n`, used only
-  /// to exercise the verifier. `corners[b]` holds the projective corner value
-  /// `G[[b]]_D` indexed by the bit vector `b` (LSB = X_0). Each variable is
-  /// treated as multilinear (per-variable degree bound 1), so round messages
-  /// are linear: `S_i(T) = a_0 + a_1 T`.
-  ///
-  /// Returns the proof and the running point / final claim for cross-checking.
-  fn prove_multilinear(
-    corners: &[Fr],
-    num_vars: usize,
-    transcript: &mut <E as Engine>::TE,
-  ) -> (SumcheckProof<E>, Vec<Fr>, Fr) {
-    assert_eq!(corners.len(), 1 << num_vars);
-    // Working table over surviving corners; index 0 = X_i^0, high bit = X_i^∞.
-    let mut table = corners.to_vec();
-    let mut rounds: Vec<CompressedUniPoly<Fr>> = Vec::with_capacity(num_vars);
-    let mut point = Vec::with_capacity(num_vars);
-
-    let mut remaining = num_vars;
-    for _ in 0..num_vars {
-      let half = 1 << (remaining - 1);
-      // Variable X_i is the low bit; suffix indexes the rest.
-      // S_i(T) = sum_suffix (table[0,suffix] + table[1,suffix] * T).
-      let mut a0 = Fr::ZERO;
-      let mut a1 = Fr::ZERO;
-      for suffix in 0..half {
-        a0 += table[suffix];
-        a1 += table[suffix + half];
-      }
-
-      let poly = UniPoly::<Fr>::from_coeffs(vec![a0, a1]).unwrap();
-      let message = poly.compress_projective();
-      transcript.absorb(b"projective_sumcheck_round", &poly);
-      let r_i = transcript
-        .squeeze(b"projective_sumcheck_challenge")
-        .unwrap();
-      point.push(r_i);
-      rounds.push(message);
-
-      // Bind X_i = r_i (monomial basis): new = a0 + r_i * a1.
-      let mut next = vec![Fr::ZERO; half];
-      for suffix in 0..half {
-        next[suffix] = table[suffix] + r_i * table[suffix + half];
-      }
-      table = next;
-      remaining -= 1;
-    }
-
-    // After n rounds, `table` holds the single reduced value G(r) = C_n.
-    let final_claim = table[0];
-    (SumcheckProof::new(rounds), point, final_claim)
-  }
 
   #[test]
   fn projective_sumcheck_multilinear_roundtrip() {
@@ -121,19 +69,26 @@ mod tests {
     let corners: Vec<Fr> = (0..(1 << num_vars))
       .map(|i| Fr::from((7 * i + 3) as u64))
       .collect();
-    // Initial claim = sum of all projective corners.
-    let initial_claim: Fr = corners.iter().copied().sum();
 
+    // Plain prover produces the proof and its own running values.
     let mut prover_ts = <E as Engine>::TE::new(b"projsc_poc_test");
-    let (proof, prover_point, prover_final) = prove_multilinear(&corners, num_vars, &mut prover_ts);
+    let out = prove_dense_multilinear::<E>(&corners, num_vars, &mut prover_ts);
 
     let degree_bounds = vec![1usize; num_vars];
     let mut verifier_ts = <E as Engine>::TE::new(b"projsc_poc_test");
-    let reduction = verify::<E>(initial_claim, &degree_bounds, &proof, &mut verifier_ts).unwrap();
+    let reduction = verify::<E>(
+      out.initial_claim,
+      &degree_bounds,
+      &out.proof,
+      &mut verifier_ts,
+    )
+    .unwrap();
 
-    // Prover and verifier must derive identical points and final claims.
-    assert_eq!(reduction.point, prover_point);
-    assert_eq!(reduction.final_claim, prover_final);
+    // The prover must satisfy the (unmodified) verifier: identical point and
+    // final claim, and the claim must equal the direct sum of corners.
+    assert_eq!(reduction.point, out.point);
+    assert_eq!(reduction.final_claim, out.final_claim);
+    assert_eq!(out.initial_claim, corners.iter().copied().sum());
   }
 
   #[test]
