@@ -577,4 +577,48 @@ mod tests {
       .sum();
     assert_eq!(out.final_claim, joint);
   }
+
+  /// PCS boundary wiring: the coefficient-form point-transform adapter
+  /// (`coeff_eval_point`) opens a committed witness at the projective sumcheck's
+  /// reduced point `r` and yields exactly `coeffMLE(witness, r)` — the quantity
+  /// the final-claim / verify_final_claim consumes. This ties the projective
+  /// reduction to the (unmodified) eval-form PCS via the O(m) point transform,
+  /// so `ppsnark_projective` uses `HyperKZGCoeffAdapter` as its EE.
+  #[test]
+  fn adapter_opens_coeff_form_at_reduced_point() {
+    use crate::{
+      provider::coeff_eval_adapter::coeff_eval_point,
+      spartan::polys::multilinear::MultilinearPolynomial,
+    };
+
+    // Run a small projective relation to obtain a genuine reduced point r.
+    let num_vars = 4usize;
+    let n = 1usize << num_vars;
+    let l_row: Vec<Fr> = (0..n).map(|i| Fr::from((i + 1) as u64)).collect();
+    let l_col: Vec<Fr> = (0..n).map(|i| Fr::from((2 * i + 3) as u64)).collect();
+    let val: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 7) as u64)).collect();
+    let vp = build_inner_abc::<E>(num_vars, l_row.clone(), l_col, val);
+    let mut ts = <E as Engine>::TE::new(b"projsc_adapter");
+    let out = vp.prove(&mut ts);
+    let r = &out.point;
+
+    // coeffMLE(l_row, r) with the MSB-first convention the adapter uses
+    // (coordinate c binds bit num_vars-1-c) — matches the projective binding.
+    let coeff_mle: Fr = (0..n)
+      .map(|b| {
+        let mut acc = l_row[b];
+        for (c, rc) in r.iter().enumerate() {
+          if (b >> (num_vars - 1 - c)) & 1 == 1 {
+            acc *= *rc;
+          }
+        }
+        acc
+      })
+      .sum();
+
+    // The adapter reduces coeffMLE(v, r) to scale * evalMLE(v, r').
+    let (r_prime, scale) = coeff_eval_point(r).unwrap();
+    let eval_mle = MultilinearPolynomial::evaluate_with(&l_row, &r_prime);
+    assert_eq!(coeff_mle, scale * eval_mle);
+  }
 }
