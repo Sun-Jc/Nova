@@ -92,6 +92,41 @@ impl<E: Engine> VirtualPolynomial<E> {
     self.terms[0].1.len()
   }
 
+  /// The number of variables `n`.
+  pub fn num_vars(&self) -> usize {
+    self.num_vars
+  }
+
+  /// Raises the common degree to `target` (`≥ current D`) by padding every term
+  /// with the projective all-ones factor `U` (design §5). A no-op if already at
+  /// `target`. Needed to bring instances to a shared degree before batching,
+  /// where zero-padding would break the projective endpoint.
+  ///
+  /// # Panics
+  /// Panics if `target < self.degree()`.
+  pub fn lift_to_degree(&mut self, target: usize) {
+    let cur = self.degree();
+    assert!(target >= cur, "cannot lift to a lower degree");
+    if target == cur {
+      return;
+    }
+    // Reuse an existing all-ones factor if present, else append one.
+    let n = 1usize << self.num_vars;
+    let ones = vec![E::Scalar::ONE; n];
+    let u_index = match self.factors.iter().position(|f| f == &ones) {
+      Some(i) => i,
+      None => {
+        self.factors.push(ones);
+        self.factors.len() - 1
+      }
+    };
+    for (_, idxs) in &mut self.terms {
+      for _ in 0..(target - cur) {
+        idxs.push(u_index);
+      }
+    }
+  }
+
   /// Builds a virtual polynomial from **mixed-degree** terms, homogenizing each
   /// to the common degree `D = max_t m_t` with the projective all-ones factor
   /// `U(X) = ∏_i (1 + X_i)` (design §5).
@@ -160,7 +195,6 @@ impl<E: Engine> VirtualPolynomial<E> {
   /// squeezes `r_i`; then binds every factor once at `r_i` in the monomial
   /// basis (`new = a_0 + r_i · a_1`).
   pub fn prove(mut self, transcript: &mut E::TE) -> ProjectiveSumcheckProverOutput<E> {
-    let degree = self.degree();
     let num_vars = self.num_vars;
 
     // C_0 = Σ_b G[[b]]_D = Σ over all corners of Σ_t coeff_t ∏_j F_j[b].
@@ -171,27 +205,8 @@ impl<E: Engine> VirtualPolynomial<E> {
 
     let mut remaining = num_vars;
     for _ in 0..num_vars {
-      let half = 1usize << (remaining - 1);
-
-      // Round polynomial coefficients [a_0, ..., a_D].
-      let mut round = vec![E::Scalar::ZERO; degree + 1];
-      let mut scratch = vec![E::Scalar::ZERO; degree + 1];
-      for suffix in 0..half {
-        for (coeff, idxs) in &self.terms {
-          // Build coeff · ∏_j (a0_j + a1_j T) into scratch.
-          scratch.iter_mut().for_each(|c| *c = E::Scalar::ZERO);
-          scratch[0] = *coeff;
-          for (cur_deg, &j) in idxs.iter().enumerate() {
-            let table = &self.factors[j];
-            let a0 = table[suffix];
-            let a1 = table[suffix + half];
-            multiply_by_linear(&mut scratch, cur_deg, a0, a1);
-          }
-          for (r, s) in round.iter_mut().zip(scratch.iter()) {
-            *r += *s;
-          }
-        }
-      }
+      // Full round polynomial coefficients [a_0, ..., a_D].
+      let round = self.round_full_coeffs(remaining);
 
       let poly = UniPoly::<E::Scalar>::from_coeffs_no_trim(round)
         .expect("round polynomial has D+1 >= 2 coefficients");
@@ -204,24 +219,13 @@ impl<E: Engine> VirtualPolynomial<E> {
       rounds.push(poly.compress_projective());
       point.push(r_i);
 
-      // Bind every factor once at r_i: new[s] = table[s] + r_i · table[s+half].
-      for table in &mut self.factors {
-        let mut next = vec![E::Scalar::ZERO; half];
-        for suffix in 0..half {
-          next[suffix] = table[suffix] + r_i * table[suffix + half];
-        }
-        *table = next;
-      }
+      self.bind(remaining, r_i);
       remaining -= 1;
     }
 
     // After n rounds each factor table holds a single value F_j(r); the reduced
     // claim is Σ_t coeff_t ∏_j F_j(r).
-    let final_claim = self
-      .terms
-      .iter()
-      .map(|(coeff, idxs)| idxs.iter().fold(*coeff, |acc, &j| acc * self.factors[j][0]))
-      .sum();
+    let final_claim = self.reduced_claim();
 
     ProjectiveSumcheckProverOutput {
       proof: SumcheckProof::new(rounds),
@@ -242,6 +246,59 @@ impl<E: Engine> VirtualPolynomial<E> {
           .map(|(coeff, idxs)| idxs.iter().fold(*coeff, |acc, &j| acc * self.factors[j][b]))
           .sum::<E::Scalar>()
       })
+      .sum()
+  }
+
+  // --- Stepwise primitives (used by both `prove` and the batched prover) ---
+
+  /// The public projective sum `C_0`.
+  pub(crate) fn claim0(&self) -> E::Scalar {
+    self.initial_claim()
+  }
+
+  /// Builds this round's full coefficient vector `[a_0, ..., a_D]` over the
+  /// current (unbound) tables, with `remaining` variables left. Does not touch
+  /// the transcript or bind anything.
+  pub(crate) fn round_full_coeffs(&self, remaining: usize) -> Vec<E::Scalar> {
+    let degree = self.degree();
+    let half = 1usize << (remaining - 1);
+    let mut round = vec![E::Scalar::ZERO; degree + 1];
+    let mut scratch = vec![E::Scalar::ZERO; degree + 1];
+    for suffix in 0..half {
+      for (coeff, idxs) in &self.terms {
+        scratch.iter_mut().for_each(|c| *c = E::Scalar::ZERO);
+        scratch[0] = *coeff;
+        for (cur_deg, &j) in idxs.iter().enumerate() {
+          let table = &self.factors[j];
+          multiply_by_linear(&mut scratch, cur_deg, table[suffix], table[suffix + half]);
+        }
+        for (r, s) in round.iter_mut().zip(scratch.iter()) {
+          *r += *s;
+        }
+      }
+    }
+    round
+  }
+
+  /// Binds every factor once at `r_i` in the monomial basis
+  /// (`new = a_0 + r_i · a_1`), with `remaining` variables left before binding.
+  pub(crate) fn bind(&mut self, remaining: usize, r_i: E::Scalar) {
+    let half = 1usize << (remaining - 1);
+    for table in &mut self.factors {
+      let mut next = vec![E::Scalar::ZERO; half];
+      for suffix in 0..half {
+        next[suffix] = table[suffix] + r_i * table[suffix + half];
+      }
+      *table = next;
+    }
+  }
+
+  /// After all variables are bound, the reduced value `Σ_t coeff_t ∏_j F_j(r)`.
+  pub(crate) fn reduced_claim(&self) -> E::Scalar {
+    self
+      .terms
+      .iter()
+      .map(|(coeff, idxs)| idxs.iter().fold(*coeff, |acc, &j| acc * self.factors[j][0]))
       .sum()
   }
 }

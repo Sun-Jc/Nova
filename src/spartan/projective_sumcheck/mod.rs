@@ -46,12 +46,16 @@
 //!   ([`EqSumCheckInstanceProjective`]); eq-construction parts only.
 //! - [`virtual_poly`] — factorized `Σ_t coeff_t ∏_j F_j` prover with an
 //!   arbitrary-degree product round kernel ([`VirtualPolynomial`]).
+//! - [`batched`] — λ-RLC batched prover folding several instances into one
+//!   sumcheck execution ([`prove_batched`]).
 
+pub mod batched;
 pub mod eq_sumcheck;
 pub mod prover;
 pub mod verifier;
 pub mod virtual_poly;
 
+pub use batched::{prove_batched, BatchedProverOutput};
 pub use eq_sumcheck::EqSumCheckInstanceProjective;
 pub use prover::{prove_dense_multilinear, ProjectiveSumcheckProverOutput};
 pub use verifier::{verify, ProjectiveSumcheckReduction};
