@@ -48,9 +48,12 @@
 //!   arbitrary-degree product round kernel ([`VirtualPolynomial`]).
 //! - [`batched`] — λ-RLC batched prover folding several instances into one
 //!   sumcheck execution ([`prove_batched`]).
+//! - [`pcs_adapter`] — zeta transform bridging coeff-MLE openings to an
+//!   eval-basis PCS ([`pcs_adapter::zeta`]).
 
 pub mod batched;
 pub mod eq_sumcheck;
+pub mod pcs_adapter;
 pub mod prover;
 pub mod verifier;
 pub mod virtual_poly;
