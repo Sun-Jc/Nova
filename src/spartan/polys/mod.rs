@@ -3,6 +3,9 @@
 /// Module providing the equality polynomial.
 pub mod eq;
 
+/// Module providing the coefficient-form (projective) equality polynomial.
+pub mod eq_projective;
+
 /// Module providing identity polynomial
 pub mod identity;
 

@@ -42,10 +42,14 @@
 //! - [`prover`] — the Phase-1 dense `D=1` reference oracle
 //!   ([`prove_dense_multilinear`]); narrow by design, not a general prover.
 //! - [`verifier`] — the round-by-round reduction ([`verify`]).
+//! - [`eq_sumcheck`] — Gruen-style projective equality-polynomial build
+//!   ([`EqSumCheckInstanceProjective`]); eq-construction parts only.
 
+pub mod eq_sumcheck;
 pub mod prover;
 pub mod verifier;
 
+pub use eq_sumcheck::EqSumCheckInstanceProjective;
 pub use prover::{prove_dense_multilinear, ProjectiveSumcheckProverOutput};
 pub use verifier::{verify, ProjectiveSumcheckReduction};
 
