@@ -20,7 +20,9 @@
 use crate::{
   spartan::{
     polys::eq_projective::EqPolynomialProjective,
-    projective_sumcheck::virtual_poly::VirtualPolynomial,
+    projective_sumcheck::{
+      eq_factored::EqFactoredVirtualPolynomial, virtual_poly::VirtualPolynomial,
+    },
   },
   traits::Engine,
 };
@@ -66,7 +68,36 @@ pub fn build_outer<E: Engine>(
   VirtualPolynomial::new_homogenized(num_vars, factors, terms)
 }
 
-/// Builds the projective **inner ABC** relation `L_row · L_col · val` over
+/// Eq-factored variant of [`build_outer`]: returns an
+/// [`EqFactoredVirtualPolynomial`] that carries `Eq^∞_τ` analytically (Gruen)
+/// instead of as a dense factor. The R-part is `Az·Bz − u·Cz·U − E·U`, whose
+/// terms are U-homogenized to degree `Dr = 2` internally (an explicit all-ones
+/// factor lifts the degree-1 `uCz` and `E` terms). The full message degree is
+/// `D = Dr + 1 = 3`, matching [`build_outer`].
+pub fn build_outer_eq_factored<E: Engine>(
+  num_vars: usize,
+  az: Vec<E::Scalar>,
+  bz: Vec<E::Scalar>,
+  cz: Vec<E::Scalar>,
+  e: Vec<E::Scalar>,
+  u: E::Scalar,
+  tau: &[E::Scalar],
+) -> EqFactoredVirtualPolynomial<E> {
+  assert_eq!(tau.len(), num_vars, "tau must have num_vars entries");
+  let n = 1usize << num_vars;
+  let u_cz: Vec<E::Scalar> = cz.into_iter().map(|c| u * c).collect();
+  let ones = vec![E::Scalar::ONE; n];
+
+  // R factors: [Az, Bz, uCz, E, U]. R terms (all lifted to Dr = 2 with U):
+  //   +Az·Bz,  −uCz·U,  −E·U.
+  let factors = vec![az, bz, u_cz, e, ones];
+  let terms = vec![
+    (E::Scalar::ONE, vec![0usize, 1]),
+    (-E::Scalar::ONE, vec![2usize, 4]),
+    (-E::Scalar::ONE, vec![3usize, 4]),
+  ];
+  EqFactoredVirtualPolynomial::new(num_vars, tau.to_vec(), factors, terms)
+}
 /// `num_vars` variables (Form B — a plain degree-3 product, no eq factor).
 ///
 /// `val` is the caller's folded matrix-value column `val_A + c·val_B + c²·val_C`
@@ -274,6 +305,35 @@ mod tests {
       final_claim: reduction.final_claim,
     };
     assert!(red.verify_final_claim(&evals, &terms));
+  }
+
+  /// The eq-factored outer builder reduces a satisfied instance to zero and
+  /// verifies at D=3 (Gruen path; correctness pinned by the differential test
+  /// in eq_factored.rs against the dense path).
+  #[test]
+  fn outer_eq_factored_reduces_to_zero() {
+    let num_vars = 3usize;
+    let n = 1usize << num_vars;
+    let u = Fr::from(7);
+    let az: Vec<Fr> = (0..n).map(|i| Fr::from((2 * i + 1) as u64)).collect();
+    let bz: Vec<Fr> = (0..n).map(|i| Fr::from((3 * i + 4) as u64)).collect();
+    let cz: Vec<Fr> = (0..n).map(|i| Fr::from((i + 2) as u64)).collect();
+    let e: Vec<Fr> = (0..n).map(|i| az[i] * bz[i] - u * cz[i]).collect();
+    let tau: Vec<Fr> = (0..num_vars)
+      .map(|i| Fr::from((5 * i + 3) as u64))
+      .collect();
+
+    let ef = build_outer_eq_factored::<E>(num_vars, az, bz, cz, e, u, &tau);
+    assert_eq!(ef.degree(), 3);
+    let mut ts = <E as Engine>::TE::new(b"projsc_outer_ef");
+    let out = ef.prove(&mut ts);
+    assert_eq!(out.initial_claim, Fr::ZERO);
+
+    let degree_bounds = vec![3usize; num_vars];
+    let mut ts_v = <E as Engine>::TE::new(b"projsc_outer_ef");
+    let reduction = verify::<E>(Fr::ZERO, &degree_bounds, &out.proof, &mut ts_v).unwrap();
+    assert_eq!(reduction.point, out.point);
+    assert_eq!(reduction.final_claim, out.final_claim);
   }
 
   /// An *unsatisfied* instance has nonzero projective sum (the ZeroCheck would

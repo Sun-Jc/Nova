@@ -32,7 +32,7 @@ use super::prover::ProjectiveSumcheckProverOutput;
 /// `poly[current_degree + 1]` must be present and zero on entry (the slot the
 /// new leading term lands in). Design §9.3.
 #[inline]
-fn multiply_by_linear<F: Field>(poly: &mut [F], current_degree: usize, a0: F, a1: F) {
+pub(crate) fn multiply_by_linear<F: Field>(poly: &mut [F], current_degree: usize, a0: F, a1: F) {
   for k in (0..=current_degree).rev() {
     let carry = poly[k] * a1;
     poly[k + 1] += carry;

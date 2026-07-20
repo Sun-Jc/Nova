@@ -16,7 +16,8 @@ use ff::Field;
 use nova_snark::{
   provider::Bn256EngineKZG,
   spartan::{
-    polys::multilinear::MultilinearPolynomial, ppsnark_projective::build_outer,
+    polys::multilinear::MultilinearPolynomial,
+    ppsnark_projective::{build_outer, build_outer_eq_factored},
     sumcheck::SumcheckProof,
   },
   traits::{Engine, TranscriptEngineTrait},
@@ -99,6 +100,25 @@ fn bench_outer_prover(c: &mut Criterion) {
         );
         let mut ts = <E as Engine>::TE::new(b"bench");
         let out = vp.prove(&mut ts);
+        black_box(out.final_claim);
+      })
+    });
+
+    // Projective, eq-factored (Gruen): eq carried analytically, not a dense
+    // factor.
+    group.bench_function("projective_eq_factored", |b| {
+      b.iter(|| {
+        let ef = build_outer_eq_factored::<E>(
+          num_vars,
+          az.clone(),
+          bz.clone(),
+          cz.clone(),
+          e.clone(),
+          u,
+          &tau,
+        );
+        let mut ts = <E as Engine>::TE::new(b"bench");
+        let out = ef.prove(&mut ts);
         black_box(out.final_claim);
       })
     });

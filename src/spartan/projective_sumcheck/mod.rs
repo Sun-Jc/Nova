@@ -52,6 +52,7 @@
 //!   eval-basis PCS ([`pcs_adapter::zeta`]).
 
 pub mod batched;
+pub mod eq_factored;
 pub mod eq_sumcheck;
 pub mod pcs_adapter;
 pub mod prover;
