@@ -4,6 +4,7 @@ pub mod bn256_grumpkin;
 #[cfg(test)]
 mod curve_property_tests;
 pub mod hyperkzg;
+pub mod hyperkzg_coeff;
 pub mod ipa_pc;
 pub mod keccak;
 pub mod mercury;
