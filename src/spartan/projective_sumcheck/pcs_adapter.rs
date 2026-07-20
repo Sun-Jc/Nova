@@ -2,6 +2,14 @@
 //! standard **evaluation-basis** MLE commitment open a **coefficient-basis**
 //! table at the projective sumcheck's reduced point.
 //!
+//! **SUPERSEDED.** The production PCS boundary is
+//! [`CoeffEvaluationEngine`](crate::provider::coeff_eval_adapter::CoeffEvaluationEngine),
+//! which transforms only the opening *point* (`r'_j = r_j/(1+r_j)`, `O(m)`),
+//! leaving the committed vector untouched — strictly cheaper than the
+//! `O(n·2^n)` per-vector zeta transform here. This module is retained only as a
+//! validated reference of the coefficient-vs-evaluation MLE relationship; new
+//! code should use the point-transform adapter.
+//!
 //! The projective sumcheck opens a witness as a coefficient-MLE:
 //! ```text
 //!   coeffMLE(vec, r) = Σ_b vec[b] · ∏_{i ∈ b} r_i.
