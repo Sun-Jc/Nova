@@ -111,7 +111,7 @@ pub fn prove_dense_multilinear<E: Engine>(
       a1 += table[suffix + half];
     }
 
-    let poly = UniPoly::<E::Scalar>::from_coeffs(vec![a0, a1])
+    let poly = UniPoly::<E::Scalar>::from_coeffs_no_trim(vec![a0, a1])
       .expect("two coefficients is a valid univariate polynomial");
 
     // Absorb the decompressed round polynomial, matching the verifier (which
@@ -142,5 +142,35 @@ pub fn prove_dense_multilinear<E: Engine>(
     initial_claim,
     point,
     final_claim,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{provider::PallasEngine, spartan::projective_sumcheck::verify};
+  use ff::Field;
+
+  type E = PallasEngine;
+  type Fr = <E as Engine>::Scalar;
+
+  /// Regression for audit F2: a round whose polynomial is a nonzero constant
+  /// (`a_0 != 0`, `a_1 = 0`) previously trimmed to length 1 and panicked in
+  /// `compress_projective`. Corner table `[5, 0]` (n=1) makes the single round
+  /// `S(T) = 5 + 0·T`.
+  #[test]
+  fn dense_nonzero_constant_round_does_not_panic() {
+    let corners = vec![Fr::from(5), Fr::ZERO];
+    let mut ts = <E as Engine>::TE::new(b"projsc_f2");
+    let out = prove_dense_multilinear::<E>(&corners, 1, &mut ts);
+
+    // The single round message must carry exactly D = 1 stored coefficient.
+    assert_eq!(out.proof.compressed_polys()[0].stored_coeffs().len(), 1);
+
+    let mut ts_ver = <E as Engine>::TE::new(b"projsc_f2");
+    let reduction = verify::<E>(out.initial_claim, &[1usize], &out.proof, &mut ts_ver).unwrap();
+    assert_eq!(reduction.point, out.point);
+    assert_eq!(reduction.final_claim, out.final_claim);
+    assert_eq!(out.initial_claim, Fr::from(5));
   }
 }

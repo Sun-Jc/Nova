@@ -44,14 +44,18 @@
 //! - [`verifier`] — the round-by-round reduction ([`verify`]).
 //! - [`eq_sumcheck`] — Gruen-style projective equality-polynomial build
 //!   ([`EqSumCheckInstanceProjective`]); eq-construction parts only.
+//! - [`virtual_poly`] — factorized `Σ_t coeff_t ∏_j F_j` prover with an
+//!   arbitrary-degree product round kernel ([`VirtualPolynomial`]).
 
 pub mod eq_sumcheck;
 pub mod prover;
 pub mod verifier;
+pub mod virtual_poly;
 
 pub use eq_sumcheck::EqSumCheckInstanceProjective;
 pub use prover::{prove_dense_multilinear, ProjectiveSumcheckProverOutput};
 pub use verifier::{verify, ProjectiveSumcheckReduction};
+pub use virtual_poly::VirtualPolynomial;
 
 #[cfg(test)]
 mod tests {

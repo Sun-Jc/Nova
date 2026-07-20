@@ -53,6 +53,26 @@ impl<Scalar: PrimeField + CustomSerdeTrait> UniPoly<Scalar> {
     Ok(Self { coeffs })
   }
 
+  /// Constructs a polynomial from its coefficients **without trimming trailing
+  /// zeros**, preserving the exact length (and hence the declared degree).
+  ///
+  /// Unlike [`UniPoly::from_coeffs`], this keeps a zero leading coefficient.
+  /// This matters for **Projective SumCheck**, whose declared per-round degree
+  /// `D` is fixed by the protocol: a round polynomial with `a_D == 0` must
+  /// still be represented with `D + 1` coefficients so that
+  /// [`UniPoly::compress_projective`] emits exactly `D` stored coefficients and
+  /// the verifier's degree check (`stored_coeffs().len() == D`) passes. Trimming
+  /// would shorten the message and reject an honest proof.
+  ///
+  /// # Errors
+  /// Returns [`NovaError::InvalidInputLength`] if `coeffs` is empty.
+  pub fn from_coeffs_no_trim(coeffs: Vec<Scalar>) -> Result<Self, NovaError> {
+    if coeffs.is_empty() {
+      return Err(NovaError::InvalidInputLength);
+    }
+    Ok(Self { coeffs })
+  }
+
   /// Constructs a polynomial from its evaluations using Gaussian elimination.
   /// Given evals: [P(0), P(1), ..., P(n-1)], constructs the polynomial P(x).
   pub fn from_evals(evals: &[Scalar]) -> Self {
