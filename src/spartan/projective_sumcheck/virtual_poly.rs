@@ -22,6 +22,7 @@ use crate::{
   traits::{Engine, TranscriptEngineTrait},
 };
 use ff::Field;
+use rayon::prelude::*;
 
 use super::prover::ProjectiveSumcheckProverOutput;
 
@@ -258,38 +259,64 @@ impl<E: Engine> VirtualPolynomial<E> {
 
   /// Builds this round's full coefficient vector `[a_0, ..., a_D]` over the
   /// current (unbound) tables, with `remaining` variables left. Does not touch
-  /// the transcript or bind anything.
+  /// the transcript or bind anything. Parallelized over suffixes with a
+  /// per-chunk scratch buffer (allocation-free in the inner loop).
   pub(crate) fn round_full_coeffs(&self, remaining: usize) -> Vec<E::Scalar> {
     let degree = self.degree();
     let half = 1usize << (remaining - 1);
-    let mut round = vec![E::Scalar::ZERO; degree + 1];
-    let mut scratch = vec![E::Scalar::ZERO; degree + 1];
-    for suffix in 0..half {
-      for (coeff, idxs) in &self.terms {
-        scratch.iter_mut().for_each(|c| *c = E::Scalar::ZERO);
-        scratch[0] = *coeff;
-        for (cur_deg, &j) in idxs.iter().enumerate() {
-          let table = &self.factors[j];
-          multiply_by_linear(&mut scratch, cur_deg, table[suffix], table[suffix + half]);
-        }
-        for (r, s) in round.iter_mut().zip(scratch.iter()) {
-          *r += *s;
+
+    let fold_range = |lo: usize, hi: usize| -> Vec<E::Scalar> {
+      let mut round = vec![E::Scalar::ZERO; degree + 1];
+      let mut scratch = vec![E::Scalar::ZERO; degree + 1];
+      for suffix in lo..hi {
+        for (coeff, idxs) in &self.terms {
+          scratch.iter_mut().for_each(|c| *c = E::Scalar::ZERO);
+          scratch[0] = *coeff;
+          for (cur_deg, &j) in idxs.iter().enumerate() {
+            let table = &self.factors[j];
+            multiply_by_linear(&mut scratch, cur_deg, table[suffix], table[suffix + half]);
+          }
+          for (r, s) in round.iter_mut().zip(scratch.iter()) {
+            *r += *s;
+          }
         }
       }
+      round
+    };
+
+    // Parallel map-reduce over suffix chunks; small sizes stay serial.
+    const PAR_THRESHOLD: usize = 1 << 10;
+    if half < PAR_THRESHOLD {
+      fold_range(0, half)
+    } else {
+      let chunk = (half / rayon::current_num_threads().max(1)).max(1);
+      (0..half)
+        .into_par_iter()
+        .step_by(chunk)
+        .map(|lo| fold_range(lo, (lo + chunk).min(half)))
+        .reduce(
+          || vec![E::Scalar::ZERO; degree + 1],
+          |mut a, b| {
+            for (x, y) in a.iter_mut().zip(b.iter()) {
+              *x += *y;
+            }
+            a
+          },
+        )
     }
-    round
   }
 
   /// Binds every factor once at `r_i` in the monomial basis
   /// (`new = a_0 + r_i · a_1`), with `remaining` variables left before binding.
+  /// In place: the lower half of each table is overwritten and truncated.
   pub(crate) fn bind(&mut self, remaining: usize, r_i: E::Scalar) {
     let half = 1usize << (remaining - 1);
     for table in &mut self.factors {
-      let mut next = vec![E::Scalar::ZERO; half];
-      for suffix in 0..half {
-        next[suffix] = table[suffix] + r_i * table[suffix + half];
-      }
-      *table = next;
+      let (lo, hi) = table.split_at_mut(half);
+      lo.par_iter_mut()
+        .zip(hi.par_iter())
+        .for_each(|(a, b)| *a += r_i * *b);
+      table.truncate(half);
     }
   }
 
