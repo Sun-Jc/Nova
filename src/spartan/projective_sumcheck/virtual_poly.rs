@@ -92,6 +92,66 @@ impl<E: Engine> VirtualPolynomial<E> {
     self.terms[0].1.len()
   }
 
+  /// Builds a virtual polynomial from **mixed-degree** terms, homogenizing each
+  /// to the common degree `D = max_t m_t` with the projective all-ones factor
+  /// `U(X) = ∏_i (1 + X_i)` (design §5).
+  ///
+  /// `U` has corner coefficient `1` at every projective corner, so padding a
+  /// term with `U^{D - m_t}` preserves every corner value while raising its
+  /// declared degree to `D`. This is what lets a coefficient-basis pointwise
+  /// relation mix factors of different multiplicative degree (e.g. `Az·Bz`
+  /// against `u·Cz`) under one declared degree — see the Stage-1 relation
+  /// ledger.
+  ///
+  /// Correctness-first: `U` is materialized as one dense `2^num_vars` factor and
+  /// appended to `factors`; a structured (`O(n)`) `U` is a later perf item.
+  ///
+  /// # Panics
+  /// Same guards as [`VirtualPolynomial::new`], except terms may have differing
+  /// lengths (each `≥ 1`); the max length becomes `D`.
+  pub fn new_homogenized(
+    num_vars: usize,
+    mut factors: Vec<Vec<E::Scalar>>,
+    terms: Vec<(E::Scalar, Vec<usize>)>,
+  ) -> Self {
+    let n = 1usize << num_vars;
+    for f in &factors {
+      assert_eq!(f.len(), n, "factor table length must be 2^num_vars");
+    }
+    assert!(
+      !terms.is_empty(),
+      "virtual polynomial needs at least one term"
+    );
+    let degree = terms.iter().map(|(_, idxs)| idxs.len()).max().unwrap();
+    assert!(degree >= 1, "projective round degree D must be >= 1");
+    for (_, idxs) in &terms {
+      assert!(!idxs.is_empty(), "each term needs at least one factor");
+      for &j in idxs {
+        assert!(j < factors.len(), "factor index out of range");
+      }
+    }
+
+    // Append one dense all-ones factor U (every corner coefficient = 1).
+    let u_index = factors.len();
+    factors.push(vec![E::Scalar::ONE; n]);
+
+    // Homogenize: pad each term with U^{D - m_t}.
+    let terms = terms
+      .into_iter()
+      .map(|(coeff, mut idxs)| {
+        let pad = degree - idxs.len();
+        idxs.extend(std::iter::repeat(u_index).take(pad));
+        (coeff, idxs)
+      })
+      .collect();
+
+    Self {
+      num_vars,
+      factors,
+      terms,
+    }
+  }
+
   /// Runs the factorized Projective SumCheck prover.
   ///
   /// Mirrors the verifier's transcript discipline: each round builds the
@@ -325,5 +385,77 @@ mod tests {
     .unwrap();
     assert_eq!(reduction.point, out_fac.point);
     assert_eq!(reduction.final_claim, out_fac.final_claim);
+  }
+
+  /// Form A end-to-end: the design §13 coefficient-wise ZeroCheck
+  /// `G = Eq^∞_ρ · (f·g − h·U)`, D=3, built with mixed-degree terms and
+  /// `new_homogenized` auto-padding with U. `Eq^∞_ρ` is supplied as a factor
+  /// table. The initial claim must be zero (the residual vanishes on every
+  /// corner), the proof must verify, and `verify_final_claim` must reconstruct
+  /// `G(r)` from the factor openings.
+  #[test]
+  fn form_a_zerocheck_eq_times_residual() {
+    use crate::spartan::polys::eq_projective::EqPolynomialProjective;
+    use crate::spartan::projective_sumcheck::ProjectiveSumcheckReduction;
+
+    let num_vars = 2usize;
+    let n = 1usize << num_vars;
+
+    // Multilinear factors as coefficient tables (design §13: f=X+2Y etc.).
+    // Corner index b: low bit = X_0. f[b], g[b], h[b] are the coefficients.
+    let f = vec![Fr::ZERO, Fr::from(1), Fr::from(2), Fr::ZERO]; // X + 2Y
+    let g = vec![Fr::ZERO, Fr::from(3), Fr::from(4), Fr::ZERO]; // 3X + 4Y
+    let h = vec![Fr::ZERO, Fr::from(3), Fr::from(8), Fr::ZERO]; // 3X + 8Y  (= f∘g)
+
+    let rho = vec![Fr::from(2), Fr::from(3)];
+    let eq_table = EqPolynomialProjective::<Fr>::new(rho.clone()).evals();
+
+    // Factors: [Eq, f, g, h]. Terms: +Eq·f·g and −Eq·h (mixed degree 3 vs 2 →
+    // the second is homogenized by U to degree 3).
+    let vp = VirtualPolynomial::<E>::new_homogenized(
+      num_vars,
+      vec![eq_table.clone(), f.clone(), g.clone(), h.clone()],
+      vec![(Fr::ONE, vec![0, 1, 2]), (-Fr::ONE, vec![0, 3])],
+    );
+    // Residual f∘g − h = 0 at every corner ⇒ projective sum = 0.
+    assert_eq!(vp.degree(), 3);
+
+    let mut ts_fac = <E as Engine>::TE::new(b"projsc_forma");
+    let out = vp.prove(&mut ts_fac);
+    assert_eq!(out.initial_claim, Fr::ZERO);
+
+    // Verify the reduction.
+    let degree_bounds = vec![3usize; num_vars];
+    let mut ts_ver = <E as Engine>::TE::new(b"projsc_forma");
+    let reduction = verify::<E>(Fr::ZERO, &degree_bounds, &out.proof, &mut ts_ver).unwrap();
+    assert_eq!(reduction.point, out.point);
+    assert_eq!(reduction.final_claim, out.final_claim);
+
+    // Final-oracle check: reconstruct G(r) from factor openings at r.
+    // evals order [Eq, f, g, h]; U built internally by verify_final_claim.
+    let r = &reduction.point;
+    let eval = |t: &[Fr]| -> Fr {
+      // coeff-basis MLE evaluate: Σ_b t[b] ∏_{i∈b} r_i. The prover binds the
+      // high bit each round, so challenge r[k] pairs with bit (num_vars-1-k).
+      (0..n)
+        .map(|b| {
+          let mut acc = t[b];
+          for (k, rk) in r.iter().enumerate() {
+            let bit = num_vars - 1 - k;
+            if (b >> bit) & 1 == 1 {
+              acc *= *rk;
+            }
+          }
+          acc
+        })
+        .sum()
+    };
+    let evals = vec![eval(&eq_table), eval(&f), eval(&g), eval(&h)];
+    let terms = vec![(Fr::ONE, vec![0usize, 1, 2]), (-Fr::ONE, vec![0usize, 3])];
+    let red2 = ProjectiveSumcheckReduction::<E> {
+      point: reduction.point.clone(),
+      final_claim: reduction.final_claim,
+    };
+    assert!(red2.verify_final_claim(&evals, &terms));
   }
 }
