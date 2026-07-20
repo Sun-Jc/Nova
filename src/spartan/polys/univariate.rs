@@ -152,9 +152,40 @@ impl<Scalar: PrimeField + CustomSerdeTrait> UniPoly<Scalar> {
       coeffs_except_linear_term,
     }
   }
+
+  /// Compresses the polynomial for **Projective SumCheck** by omitting the
+  /// *constant* term instead of the linear term.
+  ///
+  /// The projective per-round identity is `C = S(0) + [T^D] S = a_0 + a_D`,
+  /// so the constant term `a_0` is the redundant coefficient (it is recovered
+  /// from the running claim). The stored coefficients are `[a_1, ..., a_D]`
+  /// (little endian, ascending degree). Requires degree `D >= 1`.
+  ///
+  /// This reuses [`CompressedUniPoly`] as the container but follows a
+  /// different compression convention than [`UniPoly::compress`]; pair it with
+  /// [`CompressedUniPoly::decompress_projective`], never with `decompress`.
+  pub fn compress_projective(&self) -> CompressedUniPoly<Scalar> {
+    assert!(
+      self.coeffs.len() >= 2,
+      "projective compression needs D >= 1"
+    );
+    CompressedUniPoly {
+      coeffs_except_linear_term: self.coeffs[1..].to_vec(),
+    }
+  }
 }
 
 impl<Scalar: PrimeField + CustomSerdeTrait> CompressedUniPoly<Scalar> {
+  /// Returns the stored (non-omitted) coefficients.
+  ///
+  /// The omitted coefficient depends on the compression convention: the linear
+  /// term for [`UniPoly::compress`], or the constant term for
+  /// [`UniPoly::compress_projective`]. In both conventions the number of stored
+  /// coefficients equals the polynomial's degree `D`.
+  pub fn stored_coeffs(&self) -> &[Scalar] {
+    &self.coeffs_except_linear_term
+  }
+
   /// Decompresses the polynomial by recovering the linear term using the hint.
   /// We require eval(0) + eval(1) = hint, so we can solve for the linear term as:
   /// linear_term = hint - 2 * constant_term - deg2 term - deg3 term
@@ -170,6 +201,24 @@ impl<Scalar: PrimeField + CustomSerdeTrait> CompressedUniPoly<Scalar> {
     coeffs.push(linear_term);
     coeffs.extend(&self.coeffs_except_linear_term[1..]);
     assert_eq!(self.coeffs_except_linear_term.len() + 1, coeffs.len());
+    UniPoly { coeffs }
+  }
+
+  /// Decompresses a **Projective SumCheck** round message, recovering the
+  /// *constant* term from the claim via the projective identity
+  /// `C = S(0) + [T^D] S`, i.e. `a_0 = hint - a_D`.
+  ///
+  /// Here `self.coeffs_except_linear_term` holds `[a_1, ..., a_D]` as produced
+  /// by [`UniPoly::compress_projective`]. This is the counterpart of
+  /// [`CompressedUniPoly::decompress`], which instead recovers the linear term
+  /// under the Boolean identity `S(0) + S(1)`.
+  pub fn decompress_projective(&self, hint: &Scalar) -> UniPoly<Scalar> {
+    let non_constant = &self.coeffs_except_linear_term;
+    // a_0 = hint - a_D (a_D is the last, highest-degree coefficient).
+    let constant_term = *hint - non_constant[non_constant.len() - 1];
+    let mut coeffs = Vec::with_capacity(non_constant.len() + 1);
+    coeffs.push(constant_term);
+    coeffs.extend_from_slice(non_constant);
     UniPoly { coeffs }
   }
 }

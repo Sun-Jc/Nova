@@ -21,6 +21,9 @@ pub mod polys;
 /// Module providing sumcheck protocol implementation.
 pub mod sumcheck;
 
+/// Proof-of-concept Projective SumCheck verifier (over the infinity hypercube).
+pub mod projective_sumcheck;
+
 pub use sumcheck::SumcheckEngine;
 
 use crate::{
