@@ -195,7 +195,7 @@ mod tests {
   use super::*;
   use crate::{
     provider::PallasEngine,
-    spartan::projective_sumcheck::{verify, ProjectiveSumcheckReduction},
+    spartan::projective_sumcheck::{prove_batched, verify, ProjectiveSumcheckReduction},
     traits::{Engine, TranscriptEngineTrait},
   };
   use ff::Field;
@@ -447,5 +447,74 @@ mod tests {
     let mut ts_t = <E as Engine>::TE::new(b"projsc_mem_bad");
     let out_t = t_rel.prove(&mut ts_t);
     assert_ne!(out_t.initial_claim, Fr::ZERO);
+  }
+
+  /// The projective `prove_helper` equivalent: batch the inner engines
+  /// (inner ABC, inner E, witness-bound, and one memory T relation) into a
+  /// single sumcheck execution via λ-RLC, all lifted to the common degree D=3,
+  /// and verify the combined proof. This mirrors ppSNARK folding its engines in
+  /// prove_helper.
+  #[test]
+  fn batch_all_inner_engines() {
+    let num_vars = 3usize;
+    let n = 1usize << num_vars;
+
+    // Inner ABC.
+    let l_row: Vec<Fr> = (0..n).map(|i| Fr::from((i + 1) as u64)).collect();
+    let l_col: Vec<Fr> = (0..n).map(|i| Fr::from((2 * i + 3) as u64)).collect();
+    let val: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 7) as u64)).collect();
+    let abc = build_inner_abc::<E>(num_vars, l_row, l_col, val);
+
+    // Inner E.
+    let e: Vec<Fr> = (0..n).map(|i| Fr::from((3 * i + 2) as u64)).collect();
+    let r_outer: Vec<Fr> = (0..num_vars).map(|i| Fr::from((i + 4) as u64)).collect();
+    let inner_e = build_inner_e::<E>(num_vars, e, &r_outer);
+
+    // Witness-bound.
+    let w: Vec<Fr> = (0..n)
+      .map(|i| {
+        if i < 2 {
+          Fr::from((i + 9) as u64)
+        } else {
+          Fr::ZERO
+        }
+      })
+      .collect();
+    let tau: Vec<Fr> = (0..num_vars).map(|i| Fr::from((i + 2) as u64)).collect();
+    let wb = build_witness_bound::<E>(num_vars, w, &tau, 1);
+
+    // Memory T relation.
+    let t_plus_r: Vec<Fr> = (0..n).map(|i| Fr::from((3 * i + 11) as u64)).collect();
+    let w_plus_r: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 13) as u64)).collect();
+    let ts: Vec<Fr> = (0..n).map(|i| Fr::from((i % 4 + 1) as u64)).collect();
+    let t_inv: Vec<Fr> = (0..n)
+      .map(|i| ts[i] * t_plus_r[i].invert().unwrap())
+      .collect();
+    let w_inv: Vec<Fr> = (0..n).map(|i| w_plus_r[i].invert().unwrap()).collect();
+    let rho: Vec<Fr> = (0..num_vars).map(|i| Fr::from((i + 6) as u64)).collect();
+    let (_, t_rel, _) =
+      build_memory_side::<E>(num_vars, t_inv, w_inv, t_plus_r, w_plus_r, ts, &rho);
+
+    // Batch all four (the batcher lifts each to D=3 via U-homogenization).
+    let mut ts_p = <E as Engine>::TE::new(b"projsc_batch_all");
+    let out = prove_batched::<E>(vec![abc, inner_e, wb, t_rel], &mut ts_p);
+
+    // Verify with the transcript mirroring the λ squeeze.
+    let degree_bounds = vec![3usize; num_vars];
+    let mut ts_v = <E as Engine>::TE::new(b"projsc_batch_all");
+    let _lambda = ts_v.squeeze(b"projective_sumcheck_batch").unwrap();
+    let reduction = verify::<E>(out.initial_claim, &degree_bounds, &out.proof, &mut ts_v).unwrap();
+    assert_eq!(reduction.point, out.point);
+    assert_eq!(reduction.final_claim, out.final_claim);
+
+    // Joint final = Σ λ^i G_i(r).
+    let coeffs = crate::spartan::powers::<E>(&out.lambda, 4);
+    let joint: Fr = out
+      .per_instance_final
+      .iter()
+      .zip(coeffs.iter())
+      .map(|(v, c)| *v * *c)
+      .sum();
+    assert_eq!(out.final_claim, joint);
   }
 }
