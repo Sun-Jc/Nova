@@ -85,16 +85,18 @@ pub fn build_outer_eq_factored<E: Engine>(
 ) -> EqFactoredVirtualPolynomial<E> {
   assert_eq!(tau.len(), num_vars, "tau must have num_vars entries");
   let n = 1usize << num_vars;
-  let u_cz: Vec<E::Scalar> = cz.into_iter().map(|c| u * c).collect();
+  // Fuse u·Cz + E into one column (as the eval-basis outer prover does), so R
+  // has 2 terms / 4 factor tables instead of 3 / 5 — one fewer 2^n table to
+  // bind per round.
+  let u_cz_e: Vec<E::Scalar> = cz.into_iter().zip(e).map(|(c, ei)| u * c + ei).collect();
   let ones = vec![E::Scalar::ONE; n];
 
-  // R factors: [Az, Bz, uCz, E, U]. R terms (all lifted to Dr = 2 with U):
-  //   +Az·Bz,  −uCz·U,  −E·U.
-  let factors = vec![az, bz, u_cz, e, ones];
+  // R factors: [Az, Bz, uCzE, U]. R terms (lifted to Dr = 2 with U):
+  //   +Az·Bz,  −uCzE·U.
+  let factors = vec![az, bz, u_cz_e, ones];
   let terms = vec![
     (E::Scalar::ONE, vec![0usize, 1]),
-    (-E::Scalar::ONE, vec![2usize, 4]),
-    (-E::Scalar::ONE, vec![3usize, 4]),
+    (-E::Scalar::ONE, vec![2usize, 3]),
   ];
   EqFactoredVirtualPolynomial::new(num_vars, tau.to_vec(), factors, terms)
 }
