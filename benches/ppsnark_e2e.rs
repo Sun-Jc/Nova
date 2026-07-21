@@ -6,7 +6,11 @@
 //!   the coefficient-form HyperKZG adapter (`HyperKZGCoeffAdapter`).
 //!
 //! Both prove/verify the same statement; this measures the whole-SNARK Prove
-//! and Verify cost side by side. Run: `cargo criterion --bench ppsnark_e2e`.
+//! and Verify cost side by side.
+//!
+//! Requires the `test-utils` feature (HyperKZG `setup` is disabled in
+//! production builds; `test-utils` enables the insecure random-tau setup):
+//!   `cargo bench --features test-utils --bench ppsnark_e2e`
 #![allow(non_snake_case)]
 
 use criterion::*;
