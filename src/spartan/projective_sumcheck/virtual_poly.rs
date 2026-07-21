@@ -212,7 +212,7 @@ impl<E: Engine> VirtualPolynomial<E> {
       let poly = UniPoly::<E::Scalar>::from_coeffs_no_trim(round)
         .expect("round polynomial has D+1 >= 2 coefficients");
 
-      transcript.absorb(b"projective_sumcheck_round", &poly);
+      super::absorb_round::<E>(transcript, &poly);
       let r_i = transcript
         .squeeze(b"projective_sumcheck_challenge")
         .expect("transcript squeeze failed");

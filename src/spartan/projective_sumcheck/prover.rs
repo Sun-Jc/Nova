@@ -114,10 +114,9 @@ pub fn prove_dense_multilinear<E: Engine>(
     let poly = UniPoly::<E::Scalar>::from_coeffs_no_trim(vec![a0, a1])
       .expect("two coefficients is a valid univariate polynomial");
 
-    // Absorb the decompressed round polynomial, matching the verifier (which
-    // absorbs the UniPoly, the only type implementing TranscriptReprTrait),
-    // then squeeze the challenge (never before).
-    transcript.absorb(b"projective_sumcheck_round", &poly);
+    // Absorb the round polynomial (all D+1 coeffs, incl. the linear term),
+    // matching the verifier, then squeeze the challenge (never before).
+    super::absorb_round::<E>(transcript, &poly);
     let r_i = transcript
       .squeeze(b"projective_sumcheck_challenge")
       .expect("transcript squeeze failed");

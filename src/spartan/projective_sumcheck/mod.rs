@@ -35,6 +35,19 @@
 //! Round-polynomial evaluation reuses `UniPoly::evaluate` (basis-agnostic
 //! Horner), so there is no bespoke univariate arithmetic in this module.
 //!
+//! # Transcript absorption of round polynomials
+//!
+//! Round messages are absorbed via [`absorb_round`], which binds **all** `D+1`
+//! coefficients `[a_0, ..., a_D]` — crucially including the linear term `a_1`.
+//! We do NOT route through `UniPoly`'s [`TranscriptReprTrait`] because that uses
+//! the *Boolean* `compress()` (which omits `a_1`). Under the projective identity
+//! `a_0 = C_i - a_D` the constant term is already claim-determined, so omitting
+//! `a_1` from the transcript would leave a verifier-relied-upon coefficient
+//! **unbound before the challenge is squeezed** — a Fiat-Shamir soundness hole
+//! for `D >= 2` (a malicious prover could pick `a_1` after seeing the challenge
+//! to force any final claim). The prover and verifier MUST both use
+//! [`absorb_round`] so the bound bytes are identical.
+//!
 //! Scope: this is a standalone proof-of-concept, additive to the existing
 //! Spartan sumcheck engine.
 //!
@@ -55,6 +68,24 @@ pub mod eq_factored;
 pub mod prover;
 pub mod verifier;
 pub mod virtual_poly;
+
+use crate::{
+  spartan::polys::univariate::UniPoly,
+  traits::{Engine, TranscriptEngineTrait},
+};
+
+/// Absorbs a projective round polynomial into the transcript, binding **all**
+/// `D+1` coefficients `[a_0, ..., a_D]` (including the linear term `a_1`).
+///
+/// This is the single source of truth for round-message absorption: both the
+/// prover and the verifier call it, so the transcript bytes are identical. See
+/// the module-level "Transcript absorption" note for why `a_1` must be bound
+/// (the Boolean `UniPoly::compress()` used by `TranscriptReprTrait` omits it,
+/// which is unsound in the projective convention where `a_0 = C_i - a_D`).
+#[inline]
+pub(crate) fn absorb_round<E: Engine>(transcript: &mut E::TE, poly: &UniPoly<E::Scalar>) {
+  transcript.absorb(b"projective_sumcheck_round", &poly.coeffs());
+}
 
 pub use batched::{prove_batched, prove_batched_mixed, BatchedProverOutput, ProjInstance};
 pub use prover::{prove_dense_multilinear, ProjectiveSumcheckProverOutput};
@@ -171,5 +202,42 @@ mod tests {
     // Out-of-range factor index rejects rather than panics.
     let bad_terms = vec![(Fr::ONE, vec![0usize, 99])];
     assert!(!reduction.verify_final_claim(&evals, &bad_terms));
+  }
+
+  /// Security regression for the projective Fiat-Shamir binding: [`absorb_round`]
+  /// MUST bind the linear term `a_1` of the round polynomial. Two round messages
+  /// differing ONLY in `a_1` must yield DIFFERENT challenges; and the old
+  /// Boolean-`compress` absorption (via `UniPoly`'s `TranscriptReprTrait`, which
+  /// omits `a_1`) must yield the SAME challenge — the closed soundness hole.
+  #[test]
+  fn absorb_round_binds_linear_term() {
+    // Two degree-2 polynomials identical except for the linear coefficient a_1.
+    let s1 = UniPoly::<Fr>::from_coeffs(vec![Fr::from(4), Fr::from(5), Fr::from(6)]).unwrap();
+    let s2 = UniPoly::<Fr>::from_coeffs(vec![Fr::from(4), Fr::from(7), Fr::from(6)]).unwrap();
+    assert_ne!(s1.coeffs(), s2.coeffs());
+
+    // absorb_round binds a_1 → the squeezed challenges differ.
+    let mut t1 = <E as Engine>::TE::new(b"a1_bind");
+    absorb_round::<E>(&mut t1, &s1);
+    let c1: Fr = t1.squeeze(b"projective_sumcheck_challenge").unwrap();
+
+    let mut t2 = <E as Engine>::TE::new(b"a1_bind");
+    absorb_round::<E>(&mut t2, &s2);
+    let c2: Fr = t2.squeeze(b"projective_sumcheck_challenge").unwrap();
+    assert_ne!(c1, c2, "absorb_round must bind the linear term a_1");
+
+    // The old Boolean-compress absorption (UniPoly TranscriptReprTrait) omits
+    // a_1, so it does NOT distinguish s1 from s2 — the hole this replaced.
+    let mut t1_old = <E as Engine>::TE::new(b"a1_bind");
+    t1_old.absorb(b"projective_sumcheck_round", &s1);
+    let c1_old: Fr = t1_old.squeeze(b"projective_sumcheck_challenge").unwrap();
+
+    let mut t2_old = <E as Engine>::TE::new(b"a1_bind");
+    t2_old.absorb(b"projective_sumcheck_round", &s2);
+    let c2_old: Fr = t2_old.squeeze(b"projective_sumcheck_challenge").unwrap();
+    assert_eq!(
+      c1_old, c2_old,
+      "Boolean-compress absorption omits a_1 (the closed hole)"
+    );
   }
 }

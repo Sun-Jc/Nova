@@ -126,10 +126,9 @@ pub fn verify<E: Engine>(
     // a_0 = C_i - a_D, reusing UniPoly as the dense container.
     let poly = message.decompress_projective(&claim);
 
-    // Absorb the round message, then squeeze the challenge (never before).
-    // We absorb the decompressed UniPoly, matching the existing sumcheck
-    // engine (UniPoly implements TranscriptReprTrait).
-    transcript.absorb(b"projective_sumcheck_round", &poly);
+    // Absorb the round message (all D+1 coeffs, incl. the linear term), then
+    // squeeze the challenge (never before). See `absorb_round`.
+    super::absorb_round::<E>(transcript, &poly);
     let r_i = transcript.squeeze(b"projective_sumcheck_challenge")?;
 
     // Reduce: C_{i+1} = S_i(r_i), reusing UniPoly's Horner evaluation.
