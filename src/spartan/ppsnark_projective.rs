@@ -21,8 +21,8 @@ use crate::{
   provider::coeff_eval_adapter::coeff_eval_point,
   spartan::{
     polys::{
-      eq_projective::EqPolynomialProjective, identity::IdentityPolynomial,
-      multilinear::MultilinearPolynomial,
+      eq::EqPolynomial, eq_projective::EqPolynomialProjective, identity::IdentityPolynomial,
+      masked_eq::MaskedEqPolynomial, multilinear::MultilinearPolynomial,
     },
     projective_sumcheck::{
       eq_factored::EqFactoredVirtualPolynomial, virtual_poly::VirtualPolynomial,
@@ -64,22 +64,45 @@ pub fn coeff_eq_eval<E: Engine>(rho: &[E::Scalar], r: &[E::Scalar]) -> E::Scalar
 
 /// Coefficient-form evaluation of the identity factor (whose corner
 /// coefficients are `[0, 1, …, N−1]`) at a finite point `r`: `coeffMLE([0..N),
-/// r)`. Coeff-form analogue of `IdentityPolynomial::evaluate` (§3.2).
+/// r)`, computed **succinctly in `O(m)`** via the point transform.
+///
+/// `coeffMLE([0..N), r) = scale · evalMLE([0..N), r')`, and `[0..N)` read as an
+/// evaluation table is exactly the identity polynomial, so
+/// `evalMLE([0..N), r') = IdentityPolynomial::evaluate(r')` (`Σ 2^i r'_i`, O(m)).
 pub fn coeff_identity_eval<E: Engine>(num_vars: usize, r: &[E::Scalar]) -> E::Scalar {
-  let table = IdentityPolynomial::<E::Scalar>::new(num_vars).projective_corner_table();
-  coeff_eval::<E>(&table, r)
+  let (r_prime, scale) = coeff_eval_point(r).expect("coeff transform undefined (1 + r_j == 0)");
+  scale * IdentityPolynomial::<E::Scalar>::new(num_vars).evaluate(&r_prime)
 }
 
 /// Coefficient-form evaluation of the masked projective equality polynomial
-/// (first `2^num_masked_vars` corners zeroed) at `r`. Coeff-form analogue of
-/// `MaskedEqPolynomial::evaluate`.
+/// (first `2^num_masked_vars` corners zeroed) at `r`, computed **succinctly in
+/// `O(m)`** via the point transform.
+///
+/// The masked projective eq's corner coefficients equal the Boolean masked eq
+/// weights (the projective/Boolean coincidence at corners), so
+/// `coeffMLE(masked_proj, r) = scale · MaskedEqPolynomial::evaluate(r')`.
 pub fn coeff_masked_eq_eval<E: Engine>(
   rho: &[E::Scalar],
   num_masked_vars: usize,
   r: &[E::Scalar],
 ) -> E::Scalar {
-  let table = EqPolynomialProjective::<E::Scalar>::new(rho.to_vec()).masked_evals(num_masked_vars);
-  coeff_eval::<E>(&table, r)
+  let (r_prime, scale) = coeff_eval_point(r).expect("coeff transform undefined (1 + r_j == 0)");
+  let eq = EqPolynomial::<E::Scalar>::new(rho.to_vec());
+  scale * MaskedEqPolynomial::new(&eq, num_masked_vars).evaluate(&r_prime)
+}
+
+/// `coeffMLE(⊗(1, a), r)` — the coeff-MLE of the monomial tensor table
+/// `t[j] = ∏_{i∈j} a_i` (= [`coeff_tensor`]) evaluated at `r` — computed
+/// **succinctly in `O(m)`** as `∏_c (1 + a_c · r_c)`. Both `a` and `r` are
+/// length `m`, MSB-first. Used to reconstruct `mem_row(r_inner)` (mem_row is the
+/// monomial tensor over `r_outer`) without materializing the `2^m` table.
+pub fn coeff_tensor_cross<E: Engine>(a: &[E::Scalar], r: &[E::Scalar]) -> E::Scalar {
+  debug_assert_eq!(a.len(), r.len());
+  a.iter()
+    .zip(r.iter())
+    .fold(E::Scalar::ONE, |acc, (ac, rc)| {
+      acc * (E::Scalar::ONE + *ac * *rc)
+    })
 }
 
 /// The **monomial tensor** corner table `t[j] = ∏_{i∈j} r_i` (= ⊗_i (1, r_i)),
@@ -783,7 +806,8 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
       .iter()
       .fold(E::Scalar::ONE, |a, ri| a * (E::Scalar::ONE + *ri));
     let eq_rho_at_r_inner = coeff_eq_eval::<E>(&rho, &r_inner);
-    let eq_r_outer_at_r_inner = coeff_eval::<E>(&coeff_tensor(&r_outer), &r_inner); // mem_row(r_inner) via tensor
+    // mem_row(r_inner) = coeffMLE(monomial-tensor over r_outer, r_inner), O(m).
+    let eq_r_outer_at_r_inner = coeff_tensor_cross::<E>(&r_outer, &r_inner);
     let id_at_r_inner = coeff_identity_eval::<E>(num_rounds_inner, &r_inner);
 
     // Fingerprint reconstructions at r_inner.
@@ -791,18 +815,27 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     let w_row_at = gamma * self.eval_L_row + self.eval_row + r_mem * u_r_inner;
     // mem_col(r_inner) = coeffMLE(z_padded, r_inner). By linearity (anchor 6) this
     // splits into the W block [0, num_vars) plus the public IO block [u, X] at
-    // [num_vars, 2·num_vars). eval_W already covers the W block; the verifier
-    // builds the IO block from the public instance and evaluates it in coeff form.
+    // [num_vars, 2·num_vars). eval_W already covers the W block; the IO block has
+    // only |X|+1 nonzero entries, so its coeffMLE is an O(|X|·m) sparse monomial
+    // sum — no 2^m table is materialized.
     let mem_col_at = {
       let nv = vk.num_vars;
-      let big_n = 1usize << num_rounds_inner;
-      let mut io_block = vec![E::Scalar::ZERO; big_n];
-      // z = [W, u, X], so IO starts at index nv.
-      io_block[nv] = U.u;
+      let m = num_rounds_inner;
+      // Monomial ∏_{i∈idx} r_i for a single index (MSB-first: bit m-1-c ↔ r[c]).
+      let monomial = |idx: usize| -> E::Scalar {
+        let mut acc = E::Scalar::ONE;
+        for (c, rc) in r_inner.iter().enumerate() {
+          if (idx >> (m - 1 - c)) & 1 == 1 {
+            acc *= *rc;
+          }
+        }
+        acc
+      };
+      let mut io_at = U.u * monomial(nv);
       for (j, x) in U.X.iter().enumerate() {
-        io_block[nv + 1 + j] = *x;
+        io_at += *x * monomial(nv + 1 + j);
       }
-      self.eval_W + coeff_eval::<E>(&io_block, &r_inner)
+      self.eval_W + io_at
     };
     let t_col_at = gamma * mem_col_at + id_at_r_inner + r_mem * u_r_inner;
     let w_col_at = gamma * self.eval_L_col + self.eval_col + r_mem * u_r_inner;
