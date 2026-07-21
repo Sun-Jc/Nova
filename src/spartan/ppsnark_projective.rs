@@ -623,4 +623,82 @@ mod tests {
     let eval_mle = MultilinearPolynomial::evaluate_with(&l_row, &r_prime);
     assert_eq!(coeff_mle, scale * eval_mle);
   }
+
+  /// Integration capstone: the full milestone-critical path with **real
+  /// cryptography**. Commit a coefficient-form witness with HyperKZG, run a
+  /// projective sumcheck (inner ABC) to a reduced point `r`, then open the
+  /// committed witness at `r` through the coefficient-form adapter and confirm:
+  /// (a) the adapter prove/verify round-trip succeeds, and (b) the opened value
+  /// equals `coeffMLE(witness, r)` — the exact quantity the final-oracle check
+  /// consumes. This exercises commit → projective reduce → coeff-form open →
+  /// verify against a live PCS.
+  #[test]
+  fn e2e_projective_reduce_then_coeff_open() {
+    use crate::{
+      provider::{
+        coeff_eval_adapter::{coeff_eval_point, HyperKZGCoeffAdapter},
+        Bn256EngineKZG,
+      },
+      traits::{
+        commitment::{CommitmentEngineTrait, Len},
+        evaluation::EvaluationEngineTrait,
+      },
+    };
+    use ff::Field;
+    use rand_core::OsRng;
+
+    type Ek = Bn256EngineKZG;
+    type Fk = <Ek as crate::traits::Engine>::Scalar;
+    type CE = <Ek as crate::traits::Engine>::CE;
+    type Adapter = HyperKZGCoeffAdapter<Ek>;
+
+    let num_vars = 4usize;
+    let n = 1usize << num_vars;
+
+    // Witness columns (coefficient-form tables).
+    let l_row: Vec<Fk> = (0..n).map(|i| Fk::from((i + 1) as u64)).collect();
+    let l_col: Vec<Fk> = (0..n).map(|i| Fk::from((2 * i + 3) as u64)).collect();
+    let val: Vec<Fk> = (0..n).map(|i| Fk::from((5 * i + 7) as u64)).collect();
+
+    // Projective sumcheck (inner ABC) to obtain a genuine reduced point r.
+    let vp = build_inner_abc::<Ek>(num_vars, l_row.clone(), l_col, val);
+    let mut ts = <Ek as crate::traits::Engine>::TE::new(b"e2e");
+    let out = vp.prove(&mut ts);
+    let r = &out.point;
+
+    // coeffMLE(l_row, r), MSB-first (matches the adapter + projective binding).
+    let coeff_mle: Fk = (0..n)
+      .map(|b| {
+        let mut acc = l_row[b];
+        for (c, rc) in r.iter().enumerate() {
+          if (b >> (num_vars - 1 - c)) & 1 == 1 {
+            acc *= *rc;
+          }
+        }
+        acc
+      })
+      .sum();
+
+    // Real HyperKZG setup + commit the raw coefficient vector.
+    let ck = <CE as CommitmentEngineTrait<Ek>>::CommitmentKey::setup_from_rng(b"e2e", n, OsRng);
+    assert!(ck.length() >= n);
+    let (pk, vk) = Adapter::setup(&ck).unwrap();
+    let comm = CE::commit(&ck, &l_row, &Fk::ZERO);
+
+    // Open the committed witness at the projective reduced point in coeff form.
+    let mut tr_p = <Ek as crate::traits::Engine>::TE::new(b"open");
+    let arg = Adapter::prove(&ck, &pk, &mut tr_p, &comm, &l_row, r, &coeff_mle).unwrap();
+    let mut tr_v = <Ek as crate::traits::Engine>::TE::new(b"open");
+    assert!(Adapter::verify(&vk, &mut tr_v, &comm, r, &coeff_mle, &arg).is_ok());
+
+    // Cross-check the transform value the adapter used.
+    let (r_prime, scale) = coeff_eval_point(r).unwrap();
+    let eval_mle =
+      crate::spartan::polys::multilinear::MultilinearPolynomial::evaluate_with(&l_row, &r_prime);
+    assert_eq!(coeff_mle, scale * eval_mle);
+
+    // A wrong opening value must be rejected.
+    let mut tr_bad = <Ek as crate::traits::Engine>::TE::new(b"open");
+    assert!(Adapter::verify(&vk, &mut tr_bad, &comm, r, &(coeff_mle + Fk::ONE), &arg).is_err());
+  }
 }
