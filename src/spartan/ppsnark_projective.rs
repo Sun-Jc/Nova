@@ -543,6 +543,68 @@ mod tests {
     check_verifies(&out_i, num_vars, 1, b"projsc_mem_inv");
   }
 
+  /// Architecture-B capstone anchor for the memory T relation: the projective
+  /// SC's reduced final claim equals the verifier's per-factor coeff
+  /// reconstruction — `eq^∞_ρ(r)·(t_inv(r)·(T+r)(r) − TS(r)·U(r))` — where each
+  /// `(r)` is a coeff-form opening the verifier would obtain (t_inv, ts from PCS;
+  /// (T+r)(r) reconstructed via lemma 4; eq via coeff_eq_eval; U locally). This
+  /// is the exact reconstruction the full verify performs; pinning it here proves
+  /// verify can rebuild the T claim before the ~500-line assembly.
+  #[test]
+  fn memory_t_final_claim_reconstructs() {
+    let num_vars = 4usize;
+    let n = 1usize << num_vars;
+    let gamma = Fr::from(11);
+    let r_const = Fr::from(7);
+
+    // Fingerprint pieces: mem_row (projective eq corners over r_outer), id, TS.
+    let r_outer: Vec<Fr> = (0..num_vars)
+      .map(|i| Fr::from((3 * i + 2) as u64))
+      .collect();
+    let mem_row = EqPolynomialProjective::<Fr>::new(r_outer.clone()).evals();
+    let ts: Vec<Fr> = (0..n).map(|i| Fr::from((i % 5 + 1) as u64)).collect();
+    let id: Vec<Fr> = (0..n as u64).map(Fr::from).collect();
+    // T+r = mem_row·γ + id + r (pointwise), and honest t_inv = TS/(T+r).
+    let t_plus_r: Vec<Fr> = (0..n)
+      .map(|i| mem_row[i] * gamma + id[i] + r_const)
+      .collect();
+    let t_inv: Vec<Fr> = (0..n)
+      .map(|i| ts[i] * t_plus_r[i].invert().unwrap())
+      .collect();
+
+    // Build only the T relation (reuse build_memory_side, take t_rel).
+    let w_plus_r: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 13) as u64)).collect();
+    let w_inv: Vec<Fr> = (0..n).map(|i| w_plus_r[i].invert().unwrap()).collect();
+    let rho: Vec<Fr> = (0..num_vars).map(|i| Fr::from((i + 6) as u64)).collect();
+    let (_, t_rel, _) = build_memory_side::<E>(
+      num_vars,
+      t_inv.clone(),
+      w_inv,
+      t_plus_r.clone(),
+      w_plus_r,
+      ts.clone(),
+      &rho,
+    );
+
+    let mut ts_p = <E as Engine>::TE::new(b"mem_t_recon");
+    let out = t_rel.prove(&mut ts_p);
+    let r = &out.point;
+
+    // Verifier reconstruction of the T final claim from per-factor coeff evals:
+    //   eq^∞_ρ(r) · ( t_inv(r) · (T+r)(r) − TS(r) · U(r) ).
+    let u_at_r: Fr = r.iter().fold(Fr::ONE, |a, ri| a * (Fr::ONE + *ri));
+    let eq_rho_r = coeff_eq_eval::<E>(&rho, r);
+    let t_inv_r = coeff_eval::<E>(&t_inv, r); // from PCS opening
+    let ts_r = coeff_eval::<E>(&ts, r); // from PCS opening
+                                        // (T+r)(r) reconstructed (lemma 4): γ·mem_row(r) + id(r) + r·U(r).
+    let t_plus_r_at_r = gamma * coeff_eval::<E>(&mem_row, r)
+      + coeff_identity_eval::<E>(num_vars, r)
+      + r_const * u_at_r;
+    let recon = eq_rho_r * (t_inv_r * t_plus_r_at_r - ts_r * u_at_r);
+
+    assert_eq!(out.final_claim, recon);
+  }
+
   /// A dishonest T-inverse makes the T relation nonzero.
   #[test]
   fn memory_side_dishonest_inverse_is_nonzero() {
