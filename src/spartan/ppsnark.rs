@@ -217,7 +217,7 @@ impl<E: Engine> R1CSShapeSparkRepr<E> {
   }
 
   // computes evaluation oracles
-  fn evaluation_oracles(
+  pub(crate) fn evaluation_oracles(
     &self,
     S: &R1CSShape<E>,
     r_outer: &[E::Scalar],
@@ -789,20 +789,20 @@ impl<E: Engine> SumcheckEngine<E> for InnerBatchedSumcheckInstance<E> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct ProverKey<E: Engine, EE: EvaluationEngineTrait<E>> {
-  pk_ee: EE::ProverKey,
-  S_repr: R1CSShapeSparkRepr<E>,
-  S_comm: R1CSShapeSparkCommitment<E>,
-  vk_digest: E::Scalar, // digest of verifier's key
+  pub(crate) pk_ee: EE::ProverKey,
+  pub(crate) S_repr: R1CSShapeSparkRepr<E>,
+  pub(crate) S_comm: R1CSShapeSparkCommitment<E>,
+  pub(crate) vk_digest: E::Scalar, // digest of verifier's key
 }
 
 /// A type that represents the verifier's key
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct VerifierKey<E: Engine, EE: EvaluationEngineTrait<E>> {
-  num_cons: usize,
-  num_vars: usize,
-  vk_ee: EE::VerifierKey,
-  S_comm: R1CSShapeSparkCommitment<E>,
+  pub(crate) num_cons: usize,
+  pub(crate) num_vars: usize,
+  pub(crate) vk_ee: EE::VerifierKey,
+  pub(crate) S_comm: R1CSShapeSparkCommitment<E>,
   #[serde(skip, default = "OnceCell::new")]
   digest: OnceCell<E::Scalar>,
 }
