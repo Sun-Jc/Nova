@@ -18,8 +18,12 @@
 //! already handle; it does not touch the immutable projective sumcheck verifier.
 
 use crate::{
+  provider::coeff_eval_adapter::coeff_eval_point,
   spartan::{
-    polys::eq_projective::EqPolynomialProjective,
+    polys::{
+      eq_projective::EqPolynomialProjective, identity::IdentityPolynomial,
+      multilinear::MultilinearPolynomial,
+    },
     projective_sumcheck::{
       eq_factored::EqFactoredVirtualPolynomial, virtual_poly::VirtualPolynomial,
     },
@@ -27,6 +31,56 @@ use crate::{
   traits::Engine,
 };
 use ff::Field;
+
+// ---------------------------------------------------------------------------
+// Coefficient-form finite-point evaluation helpers (verify-side reconstruction)
+//
+// The projective sumcheck reduces to a coefficient-form point `r`. Every value
+// the verifier reconstructs is a coefficient-form MLE evaluation `coeffMLE(v, r)
+// = <v, ⊗ (1, r_j)>`. Reusing the point-transform adapter, this equals
+// `scale · evalMLE(v, r')` with `(r', scale) = coeff_eval_point(r)` — so we
+// reuse the existing (eval-basis) MLE evaluator rather than writing a new one.
+// This is the concrete "same repr, different interpretation" reuse.
+// ---------------------------------------------------------------------------
+
+/// `coeffMLE(v, r) = <v, ⊗_j (1, r_j)>`, computed by delegating to the existing
+/// evaluation-basis evaluator via the point transform (adapter §5). MSB-first,
+/// matching the projective provers' high-bit-first binding.
+///
+/// # Panics
+/// Panics if the transform is undefined (`1 + r_j = 0` for some `j`) — under a
+/// Fiat-Shamir point this is negligible.
+pub fn coeff_eval<E: Engine>(v: &[E::Scalar], r: &[E::Scalar]) -> E::Scalar {
+  let (r_prime, scale) = coeff_eval_point(r).expect("coeff transform undefined (1 + r_j == 0)");
+  scale * MultilinearPolynomial::evaluate_with(v, &r_prime)
+}
+
+/// Coefficient-form evaluation of the projective equality polynomial
+/// `Eq^∞_ρ` at a finite point `r`: `∏_j ((1 − ρ_j) + ρ_j r_j)`. This is the
+/// coeff-form analogue of `EqPolynomial::evaluate` used in the eval-basis verify.
+pub fn coeff_eq_eval<E: Engine>(rho: &[E::Scalar], r: &[E::Scalar]) -> E::Scalar {
+  EqPolynomialProjective::<E::Scalar>::new(rho.to_vec()).evaluate(r)
+}
+
+/// Coefficient-form evaluation of the identity factor (whose corner
+/// coefficients are `[0, 1, …, N−1]`) at a finite point `r`: `coeffMLE([0..N),
+/// r)`. Coeff-form analogue of `IdentityPolynomial::evaluate` (§3.2).
+pub fn coeff_identity_eval<E: Engine>(num_vars: usize, r: &[E::Scalar]) -> E::Scalar {
+  let table = IdentityPolynomial::<E::Scalar>::new(num_vars).projective_corner_table();
+  coeff_eval::<E>(&table, r)
+}
+
+/// Coefficient-form evaluation of the masked projective equality polynomial
+/// (first `2^num_masked_vars` corners zeroed) at `r`. Coeff-form analogue of
+/// `MaskedEqPolynomial::evaluate`.
+pub fn coeff_masked_eq_eval<E: Engine>(
+  rho: &[E::Scalar],
+  num_masked_vars: usize,
+  r: &[E::Scalar],
+) -> E::Scalar {
+  let table = EqPolynomialProjective::<E::Scalar>::new(rho.to_vec()).masked_evals(num_masked_vars);
+  coeff_eval::<E>(&table, r)
+}
 
 /// Builds the projective outer-relation virtual polynomial
 /// `Eq^∞_τ · (Az·Bz − u·Cz·U − E·U)` over `num_vars` variables.
@@ -700,5 +754,73 @@ mod tests {
     // A wrong opening value must be rejected.
     let mut tr_bad = <Ek as crate::traits::Engine>::TE::new(b"open");
     assert!(Adapter::verify(&vk, &mut tr_bad, &comm, r, &(coeff_mle + Fk::ONE), &arg).is_err());
+  }
+
+  // Direct coeffMLE(v, r) = Σ_b v[b] ∏_{i∈b} r_i, MSB-first (bit num_vars-1-c ↔ r[c]).
+  fn direct_coeff_mle(v: &[Fr], r: &[Fr]) -> Fr {
+    let m = r.len();
+    (0..v.len())
+      .map(|b| {
+        let mut acc = v[b];
+        for (c, rc) in r.iter().enumerate() {
+          if (b >> (m - 1 - c)) & 1 == 1 {
+            acc *= *rc;
+          }
+        }
+        acc
+      })
+      .sum()
+  }
+
+  /// `coeff_eval` (via the adapter transform) matches the direct coeff-MLE.
+  #[test]
+  fn coeff_eval_matches_direct() {
+    for m in 1..=6usize {
+      let n = 1usize << m;
+      let v: Vec<Fr> = (0..n).map(|i| Fr::from((7 * i + 1) as u64)).collect();
+      let r: Vec<Fr> = (0..m).map(|i| Fr::from((3 * i + 2) as u64)).collect();
+      assert_eq!(coeff_eval::<E>(&v, &r), direct_coeff_mle(&v, &r), "m={m}");
+    }
+  }
+
+  /// KEY coeff-vs-eval difference: for a zero-padded vector (real data in the
+  /// low 2^m block, high pad bits zero), coeffMLE(padded, r_full) equals
+  /// coeffMLE(v, r_low) with **factor = 1** — unlike eval basis, where the pad
+  /// contributes ∏(1 − r_pad). This is because padded high bits are 0, so those
+  /// corners carry no r factors.
+  #[test]
+  fn coeff_padding_factor_is_one() {
+    let m = 3usize; // real vars
+    let pad = 2usize; // padding vars (high/MSB)
+    let n_low = 1usize << m;
+    let n_full = 1usize << (m + pad);
+
+    let v: Vec<Fr> = (0..n_low).map(|i| Fr::from((5 * i + 3) as u64)).collect();
+    // Zero-pad into the low block; high pad bits (MSB positions) index the tail.
+    let mut v_full = vec![Fr::ZERO; n_full];
+    v_full[..n_low].copy_from_slice(&v);
+
+    let r_pad: Vec<Fr> = (0..pad).map(|i| Fr::from((i + 9) as u64)).collect();
+    let r_low: Vec<Fr> = (0..m).map(|i| Fr::from((2 * i + 4) as u64)).collect();
+    // MSB-first: pad occupies the top positions, so r_full = [r_pad, r_low].
+    let r_full: Vec<Fr> = r_pad.iter().chain(r_low.iter()).cloned().collect();
+
+    assert_eq!(
+      coeff_eval::<E>(&v_full, &r_full),
+      coeff_eval::<E>(&v, &r_low)
+    );
+  }
+
+  /// `coeff_identity_eval` equals coeffMLE([0,1,…,N-1], r).
+  #[test]
+  fn coeff_identity_eval_matches() {
+    let m = 4usize;
+    let n = 1usize << m;
+    let r: Vec<Fr> = (0..m).map(|i| Fr::from((i + 3) as u64)).collect();
+    let table: Vec<Fr> = (0..n as u64).map(Fr::from).collect();
+    assert_eq!(
+      coeff_identity_eval::<E>(m, &r),
+      direct_coeff_mle(&table, &r)
+    );
   }
 }
