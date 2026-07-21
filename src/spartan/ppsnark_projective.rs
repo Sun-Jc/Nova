@@ -336,7 +336,8 @@ use crate::{
     powers,
     ppsnark::{ProverKey, VerifierKey},
     projective_sumcheck::{
-      batched::prove_batched, verify as sc_verify, ProjectiveSumcheckReduction,
+      batched::{prove_batched_mixed, ProjInstance},
+      verify as sc_verify, ProjectiveSumcheckReduction,
     },
     PolyEvalInstance, PolyEvalWitness,
   },
@@ -595,16 +596,19 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
       .map(|_| transcript.squeeze(b"rho"))
       .collect::<Result<Vec<_>, NovaError>>()?;
 
-    // Build inner instances: memory (row/col × inv/T/W), inner ABC, inner E,
-    // witness-bound. All lifted to degree 3 by the batcher.
+    // Build inner instances. The eq-carrying relations (inner-E, memory T/W)
+    // use the eq-factored builders so Eq^∞ and the homogenizing U are carried
+    // analytically (Gruen split-eq + BDDT) instead of as dense 2^n factors; the
+    // plain relations (logup inv, inner-ABC, witness-bound) stay dense. They are
+    // folded together by `prove_batched_mixed`.
     let val: Vec<E::Scalar> = (0..n)
       .into_par_iter()
       .map(|i| pk.S_repr.val_A[i] + c * pk.S_repr.val_B[i] + c * c * pk.S_repr.val_C[i])
       .collect();
     let abc = build_inner_abc::<E>(num_rounds_inner, L_row.clone(), L_col.clone(), val);
-    let inner_e = build_inner_e::<E>(num_rounds_inner, e_col.clone(), &r_outer);
+    let inner_e = build_inner_e_eq_factored::<E>(num_rounds_inner, e_col.clone(), &r_outer);
     let wb = build_witness_bound::<E>(num_rounds_inner, w_col.clone(), &tau, S.num_vars.log_2());
-    let (row_inv_inst, row_t, row_w) = build_memory_side::<E>(
+    let (row_inv_inst, row_t, row_w) = build_memory_side_eq_factored::<E>(
       num_rounds_inner,
       t_inv_row.clone(),
       w_inv_row.clone(),
@@ -613,7 +617,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
       pk.S_repr.ts_row.clone(),
       &rho,
     );
-    let (col_inv_inst, col_t, col_w) = build_memory_side::<E>(
+    let (col_inv_inst, col_t, col_w) = build_memory_side_eq_factored::<E>(
       num_rounds_inner,
       t_inv_col.clone(),
       w_inv_col.clone(),
@@ -623,17 +627,17 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
       &rho,
     );
 
-    let out_inner = prove_batched::<E>(
+    let out_inner = prove_batched_mixed::<E>(
       vec![
-        row_inv_inst,
-        row_t,
-        row_w,
-        col_inv_inst,
-        col_t,
-        col_w,
-        abc,
-        inner_e,
-        wb,
+        ProjInstance::Plain(row_inv_inst),
+        ProjInstance::EqFactored(row_t),
+        ProjInstance::EqFactored(row_w),
+        ProjInstance::Plain(col_inv_inst),
+        ProjInstance::EqFactored(col_t),
+        ProjInstance::EqFactored(col_w),
+        ProjInstance::Plain(abc),
+        ProjInstance::EqFactored(inner_e),
+        ProjInstance::Plain(wb),
       ],
       &mut transcript,
     );
@@ -644,25 +648,26 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     // F_j(r_inner) for free), and only explicitly evaluate the columns that are
     // NOT sumcheck factors (val_{A,B,C}, row, col) — mirroring the eval-basis
     // prover, which likewise gets most openings for free from the sumcheck.
-    // Batch order & factor layouts (see the builders):
-    //   [0] row_inv = [t_inv_row, w_inv_row]
-    //   [1] row_t   = [eq, t_inv_row, t_row, ts_row, U]
-    //   [3] col_inv = [t_inv_col, w_inv_col]
-    //   [4] col_t   = [eq, t_inv_col, t_col, ts_col, U]
-    //   [6] abc     = [L_row, L_col, val]
-    //   [7] inner_e = [eq, e_col]
-    //   [8] wb      = [masked_eq, w_col]
+    // Batch order & factor layouts. Eq-factored instances expose only their
+    // REAL (non-eq) factors via bound_factor_values (eq/U are analytic):
+    //   [0] row_inv  Plain      = [t_inv_row, w_inv_row]
+    //   [1] row_t    EqFactored = [t_inv_row, t_plus_r_row, ts_row]
+    //   [3] col_inv  Plain      = [t_inv_col, w_inv_col]
+    //   [4] col_t    EqFactored = [t_inv_col, t_plus_r_col, ts_col]
+    //   [6] abc      Plain      = [L_row, L_col, val]
+    //   [7] inner_e  EqFactored = [e_col]
+    //   [8] wb       Plain      = [masked_eq, w_col]
     let bf = &out_inner.per_instance_bound_factors;
     let eval_W = bf[8][1]; // wb: w_col
-    let eval_E = bf[7][1]; // inner_e: e_col
+    let eval_E = bf[7][0]; // inner_e (eq-factored): e_col
     let eval_L_row = bf[6][0]; // abc: L_row
     let eval_L_col = bf[6][1]; // abc: L_col
     let eval_t_plus_r_inv_row = bf[0][0]; // row_inv: t_inv_row
     let eval_w_plus_r_inv_row = bf[0][1]; // row_inv: w_inv_row
-    let eval_ts_row = bf[1][3]; // row_t: ts_row
+    let eval_ts_row = bf[1][2]; // row_t (eq-factored): ts_row
     let eval_t_plus_r_inv_col = bf[3][0]; // col_inv: t_inv_col
     let eval_w_plus_r_inv_col = bf[3][1]; // col_inv: w_inv_col
-    let eval_ts_col = bf[4][3]; // col_t: ts_col
+    let eval_ts_col = bf[4][2]; // col_t (eq-factored): ts_col
                                 // Only these 5 are not sumcheck factors — evaluate explicitly (as eval does).
     let eval_val_A = coeff_eval::<E>(&pk.S_repr.val_A, &r_inner);
     let eval_val_B = coeff_eval::<E>(&pk.S_repr.val_B, &r_inner);
@@ -847,10 +852,17 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     let u_r_inner: E::Scalar = r_inner
       .iter()
       .fold(E::Scalar::ONE, |a, ri| a * (E::Scalar::ONE + *ri));
-    let eq_rho_at_r_inner = coeff_eq_eval::<E>(&rho, &r_inner);
     // mem_row(r_inner) = coeffMLE(monomial-tensor over r_outer, r_inner), O(m).
+    // These reconstruct bound *factor* values (natural order).
     let eq_r_outer_at_r_inner = coeff_tensor_cross::<E>(&r_outer, &r_inner);
     let id_at_r_inner = coeff_identity_eval::<E>(num_rounds_inner, &r_inner);
+
+    // Analytic eq for the eq-factored relations (memory T/W, inner-E) is carried
+    // as eq_left = ∏_k ((1−τ_{cur})+τ_{cur}·r_k) with the eq-factored prover
+    // binding the HIGH variable first, so τ_j pairs with r_inner REVERSED.
+    let r_inner_rev: Vec<E::Scalar> = r_inner.iter().rev().copied().collect();
+    let eq_rho_ef = coeff_eq_eval::<E>(&rho, &r_inner_rev);
+    let eq_r_outer_ef = coeff_eq_eval::<E>(&r_outer, &r_inner_rev);
 
     // Fingerprint reconstructions at r_inner.
     let t_row_at = gamma * eq_r_outer_at_r_inner + id_at_r_inner + r_mem * u_r_inner;
@@ -896,16 +908,14 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     //   wit:    maskedEq·W native deg 2 → batcher lifts ×U¹.
     let u2 = u_r_inner * u_r_inner;
     let f0 = (self.eval_t_plus_r_inv_row - self.eval_w_plus_r_inv_row) * u2;
-    let f1 =
-      eq_rho_at_r_inner * (self.eval_t_plus_r_inv_row * t_row_at - self.eval_ts_row * u_r_inner);
-    let f2 = eq_rho_at_r_inner * (self.eval_w_plus_r_inv_row * w_row_at - u2);
+    let f1 = eq_rho_ef * (self.eval_t_plus_r_inv_row * t_row_at - self.eval_ts_row * u_r_inner);
+    let f2 = eq_rho_ef * (self.eval_w_plus_r_inv_row * w_row_at - u2);
     let f3 = (self.eval_t_plus_r_inv_col - self.eval_w_plus_r_inv_col) * u2;
-    let f4 =
-      eq_rho_at_r_inner * (self.eval_t_plus_r_inv_col * t_col_at - self.eval_ts_col * u_r_inner);
-    let f5 = eq_rho_at_r_inner * (self.eval_w_plus_r_inv_col * w_col_at - u2);
+    let f4 = eq_rho_ef * (self.eval_t_plus_r_inv_col * t_col_at - self.eval_ts_col * u_r_inner);
+    let f5 = eq_rho_ef * (self.eval_w_plus_r_inv_col * w_col_at - u2);
     let val_at = self.eval_val_A + c * self.eval_val_B + c * c * self.eval_val_C;
     let f6 = self.eval_L_row * self.eval_L_col * val_at;
-    let f7 = eq_r_outer_at_r_inner * self.eval_E * u_r_inner;
+    let f7 = eq_r_outer_ef * self.eval_E * u_r_inner;
     let f8 = masked_eq_at * self.eval_W * u_r_inner;
 
     let per = [f0, f1, f2, f3, f4, f5, f6, f7, f8];
