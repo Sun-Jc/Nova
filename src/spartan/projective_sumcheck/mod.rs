@@ -15,7 +15,7 @@
 //!
 //! This module implements only the SumCheck reduction (rounds + final claim
 //! `C_n`). Authenticating `G(r)` against a PCS / virtual polynomial is left to
-//! the caller — [`verify`] returns the sampled point and the reduced claim
+//! the caller — `verify` returns the sampled point and the reduced claim
 //! `C_n`, and the caller compares `C_n` against its own evaluation of `G(r)`
 //! (including any public structured factors such as `U(r)`).
 //!
@@ -39,28 +39,24 @@
 //! Spartan sumcheck engine.
 //!
 //! Module layout:
-//! - [`prover`] — the Phase-1 dense `D=1` reference oracle
-//!   ([`prove_dense_multilinear`]); narrow by design, not a general prover.
-//! - [`verifier`] — the round-by-round reduction ([`verify`]).
-//! - [`eq_sumcheck`] — Gruen-style projective equality-polynomial build
-//!   ([`EqSumCheckInstanceProjective`]); eq-construction parts only.
-//! - [`virtual_poly`] — factorized `Σ_t coeff_t ∏_j F_j` prover with an
-//!   arbitrary-degree product round kernel ([`VirtualPolynomial`]).
-//! - [`batched`] — λ-RLC batched prover folding several instances into one
-//!   sumcheck execution ([`prove_batched`]).
-//! - [`pcs_adapter`] — zeta transform bridging coeff-MLE openings to an
-//!   eval-basis PCS ([`pcs_adapter::zeta`]).
+//! - `prover` — the Phase-1 dense `D=1` reference oracle
+//!   (`prove_dense_multilinear`); narrow by design, not a general prover.
+//! - `verifier` — the round-by-round reduction (`verify`).
+//! - `eq_factored` — eq-factored prover (`EqFactoredVirtualPolynomial`)
+//!   carrying `Eq^∞`/`U` analytically (Gruen split-half eq, structured U) with a
+//!   claim-derived (BDDT) deg-2 round kernel.
+//! - `virtual_poly` — factorized `Σ_t coeff_t ∏_j F_j` prover with an
+//!   arbitrary-degree product round kernel (`VirtualPolynomial`).
+//! - `batched` — λ-RLC batched provers folding several instances into one
+//!   sumcheck execution (`prove_batched`, `prove_batched_mixed`).
 
 pub mod batched;
 pub mod eq_factored;
-pub mod eq_sumcheck;
-pub mod pcs_adapter;
 pub mod prover;
 pub mod verifier;
 pub mod virtual_poly;
 
-pub use batched::{prove_batched, BatchedProverOutput};
-pub use eq_sumcheck::EqSumCheckInstanceProjective;
+pub use batched::{prove_batched, prove_batched_mixed, BatchedProverOutput, ProjInstance};
 pub use prover::{prove_dense_multilinear, ProjectiveSumcheckProverOutput};
 pub use verifier::{verify, ProjectiveSumcheckReduction};
 pub use virtual_poly::VirtualPolynomial;

@@ -14,7 +14,7 @@
 //! E[b])` — identical to the eval-basis outer sumcheck's summand (Stage-1
 //! relation ledger, §2.1), because the pointwise relation is basis-neutral.
 //!
-//! The builder returns a [`VirtualPolynomial`] the projective prover/verifier
+//! The builder returns a `VirtualPolynomial` the projective prover/verifier
 //! already handle; it does not touch the immutable projective sumcheck verifier.
 
 use crate::{
@@ -84,21 +84,19 @@ pub fn build_outer_eq_factored<E: Engine>(
   tau: &[E::Scalar],
 ) -> EqFactoredVirtualPolynomial<E> {
   assert_eq!(tau.len(), num_vars, "tau must have num_vars entries");
-  let n = 1usize << num_vars;
   // Fuse u·Cz + E into one column (as the eval-basis outer prover does), so R
-  // has 2 terms / 4 factor tables instead of 3 / 5 — one fewer 2^n table to
-  // bind per round.
+  // has 2 terms / 3 factor tables — and the shorter term is homogenized by an
+  // analytic U (no dense all-ones 2^n table to store or bind).
   let u_cz_e: Vec<E::Scalar> = cz.into_iter().zip(e).map(|(c, ei)| u * c + ei).collect();
-  let ones = vec![E::Scalar::ONE; n];
 
-  // R factors: [Az, Bz, uCzE, U]. R terms (lifted to Dr = 2 with U):
-  //   +Az·Bz,  −uCzE·U.
-  let factors = vec![az, bz, u_cz_e, ones];
+  // R factors: [Az, Bz, uCzE]. R terms (Dr = 2): +Az·Bz, −uCzE·U (the second
+  // term carries one analytic U copy).
+  let factors = vec![az, bz, u_cz_e];
   let terms = vec![
     (E::Scalar::ONE, vec![0usize, 1]),
-    (-E::Scalar::ONE, vec![2usize, 3]),
+    (-E::Scalar::ONE, vec![2usize]),
   ];
-  EqFactoredVirtualPolynomial::new(num_vars, tau.to_vec(), factors, terms)
+  EqFactoredVirtualPolynomial::new_mixed(num_vars, tau.to_vec(), factors, terms)
 }
 /// `num_vars` variables (Form B — a plain degree-3 product, no eq factor).
 ///
@@ -223,12 +221,81 @@ pub fn build_memory_side<E: Engine>(
   (inv, t_relation, w_relation)
 }
 
+/// Eq-factored variant of [`build_inner_e`]: `Eq^∞_{r_outer}·E` carrying the eq
+/// factor analytically (no dense eq table). Message degree `D = 2`.
+pub fn build_inner_e_eq_factored<E: Engine>(
+  num_vars: usize,
+  e: Vec<E::Scalar>,
+  r_outer: &[E::Scalar],
+) -> EqFactoredVirtualPolynomial<E> {
+  assert_eq!(
+    r_outer.len(),
+    num_vars,
+    "r_outer must have num_vars entries"
+  );
+  EqFactoredVirtualPolynomial::new(
+    num_vars,
+    r_outer.to_vec(),
+    vec![e],
+    vec![(E::Scalar::ONE, vec![0])],
+  )
+}
+
+/// Eq-factored variant of [`build_memory_side`]: the T and W relations carry
+/// `Eq^∞_ρ` and the homogenizing `U` **analytically** (no dense eq / all-ones
+/// `2^n` tables to store or bind), while the degree-1 `inv` difference stays a
+/// plain instance. Returns `(inv, t_relation, w_relation)`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_memory_side_eq_factored<E: Engine>(
+  num_vars: usize,
+  t_inv: Vec<E::Scalar>,
+  w_inv: Vec<E::Scalar>,
+  t_plus_r: Vec<E::Scalar>,
+  w_plus_r: Vec<E::Scalar>,
+  ts: Vec<E::Scalar>,
+  rho: &[E::Scalar],
+) -> (
+  VirtualPolynomial<E>,
+  EqFactoredVirtualPolynomial<E>,
+  EqFactoredVirtualPolynomial<E>,
+) {
+  assert_eq!(rho.len(), num_vars, "rho must have num_vars entries");
+
+  // inv: t_inv − w_inv  (degree 1, no eq) — plain.
+  let inv = VirtualPolynomial::new(
+    num_vars,
+    vec![t_inv.clone(), w_inv.clone()],
+    vec![(E::Scalar::ONE, vec![0]), (-E::Scalar::ONE, vec![1])],
+  );
+
+  // T: Eq·(t_inv·t_plus_r − ts·U). Real factors [t_inv, t_plus_r, ts].
+  let t_relation = EqFactoredVirtualPolynomial::new_mixed(
+    num_vars,
+    rho.to_vec(),
+    vec![t_inv, t_plus_r, ts],
+    vec![(E::Scalar::ONE, vec![0, 1]), (-E::Scalar::ONE, vec![2])],
+  );
+
+  // W: Eq·(w_inv·w_plus_r − U²). The constant "−1" term is a pure U^Dr term
+  // (the dense path's all-ones factor is the polynomial U itself).
+  let w_relation = EqFactoredVirtualPolynomial::new_mixed(
+    num_vars,
+    rho.to_vec(),
+    vec![w_inv, w_plus_r],
+    vec![(E::Scalar::ONE, vec![0, 1]), (-E::Scalar::ONE, vec![])],
+  );
+
+  (inv, t_relation, w_relation)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::{
     provider::PallasEngine,
-    spartan::projective_sumcheck::{prove_batched, verify, ProjectiveSumcheckReduction},
+    spartan::projective_sumcheck::{
+      prove_batched, prove_batched_mixed, verify, ProjInstance, ProjectiveSumcheckReduction,
+    },
     traits::{Engine, TranscriptEngineTrait},
   };
   use ff::Field;
@@ -578,6 +645,108 @@ mod tests {
       .map(|(v, c)| *v * *c)
       .sum();
     assert_eq!(out.final_claim, joint);
+  }
+
+  /// F1 wire: the eq-factored inner builders (analytic eq/U) batched through the
+  /// mixed batcher must produce a byte-identical proof to a **natural-order**
+  /// dense-eq batch of the same relations — validating that inner-E and memory-T
+  /// carry eq/U analytically without changing the proof. (The existing
+  /// `EqPolynomialProjective`-order dense builders use the reverse tau order, so
+  /// the reference here is built with the matching natural-order eq.)
+  #[test]
+  fn batch_all_inner_engines_eq_factored() {
+    // Natural-order projective eq corner table (matches the eq-factored prover).
+    fn eq_nat(taus: &[Fr]) -> Vec<Fr> {
+      let n = taus.len();
+      let mut e = vec![Fr::ZERO; 1usize << n];
+      e[0] = Fr::ONE;
+      for (i, &t) in taus.iter().enumerate() {
+        let blk = 1usize << i;
+        for b in 0..blk {
+          let lo = e[b];
+          e[b] = lo * (Fr::ONE - t);
+          e[b + blk] = lo * t;
+        }
+      }
+      e
+    }
+
+    let num_vars = 4usize;
+    let n = 1usize << num_vars;
+
+    let l_row: Vec<Fr> = (0..n).map(|i| Fr::from((i + 1) as u64)).collect();
+    let l_col: Vec<Fr> = (0..n).map(|i| Fr::from((2 * i + 3) as u64)).collect();
+    let val: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 7) as u64)).collect();
+
+    let e: Vec<Fr> = (0..n).map(|i| Fr::from((3 * i + 2) as u64)).collect();
+    let r_outer: Vec<Fr> = (0..num_vars).map(|i| Fr::from((i + 4) as u64)).collect();
+
+    let t_plus_r: Vec<Fr> = (0..n).map(|i| Fr::from((3 * i + 11) as u64)).collect();
+    let ts: Vec<Fr> = (0..n).map(|i| Fr::from((i % 4 + 1) as u64)).collect();
+    let t_inv: Vec<Fr> = (0..n)
+      .map(|i| ts[i] * t_plus_r[i].invert().unwrap())
+      .collect();
+    let w_inv: Vec<Fr> = (0..n).map(|i| Fr::from((7 * i + 1) as u64)).collect();
+    let w_plus_r: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 13) as u64)).collect();
+    let rho: Vec<Fr> = (0..num_vars).map(|i| Fr::from((i + 6) as u64)).collect();
+
+    // Eq-factored mixed batch: [ABC (plain), inner-E (eq-fac), memory-T (eq-fac)].
+    let abc_m = build_inner_abc::<E>(num_vars, l_row.clone(), l_col.clone(), val.clone());
+    let inner_e_m = build_inner_e_eq_factored::<E>(num_vars, e.clone(), &r_outer);
+    let (_, t_rel_m, _) = build_memory_side_eq_factored::<E>(
+      num_vars,
+      t_inv.clone(),
+      w_inv.clone(),
+      t_plus_r.clone(),
+      w_plus_r.clone(),
+      ts.clone(),
+      &rho,
+    );
+    let mut ts_m = <E as Engine>::TE::new(b"projsc_batch_ef");
+    let out_m = prove_batched_mixed::<E>(
+      vec![
+        ProjInstance::Plain(abc_m),
+        ProjInstance::EqFactored(inner_e_m),
+        ProjInstance::EqFactored(t_rel_m),
+      ],
+      &mut ts_m,
+    );
+
+    // Natural-order dense reference (same relations, eq/U as dense factors).
+    let abc_n = build_inner_abc::<E>(num_vars, l_row, l_col, val);
+    let inner_e_n = VirtualPolynomial::<E>::new(
+      num_vars,
+      vec![eq_nat(&r_outer), e],
+      vec![(Fr::ONE, vec![0, 1])],
+    );
+    let t_rel_n = VirtualPolynomial::<E>::new_homogenized(
+      num_vars,
+      vec![eq_nat(&rho), t_inv, t_plus_r, ts],
+      vec![(Fr::ONE, vec![0, 1, 2]), (-Fr::ONE, vec![0, 3])],
+    );
+    let mut ts_n = <E as Engine>::TE::new(b"projsc_batch_ef");
+    let out_n = prove_batched::<E>(vec![abc_n, inner_e_n, t_rel_n], &mut ts_n);
+
+    assert_eq!(out_m.lambda, out_n.lambda);
+    assert_eq!(out_m.initial_claim, out_n.initial_claim);
+    assert_eq!(out_m.point, out_n.point);
+    assert_eq!(out_m.final_claim, out_n.final_claim);
+    assert_eq!(out_m.per_instance_final, out_n.per_instance_final);
+    let polys_m = out_m.proof.compressed_polys();
+    let polys_n = out_n.proof.compressed_polys();
+    assert_eq!(polys_m.len(), polys_n.len());
+    for (x, y) in polys_m.iter().zip(polys_n.iter()) {
+      assert_eq!(x.stored_coeffs(), y.stored_coeffs());
+    }
+
+    // And the mixed proof verifies.
+    let degree_bounds = vec![3usize; num_vars];
+    let mut ts_v = <E as Engine>::TE::new(b"projsc_batch_ef");
+    let _l = ts_v.squeeze(b"projective_sumcheck_batch").unwrap();
+    let reduction =
+      verify::<E>(out_m.initial_claim, &degree_bounds, &out_m.proof, &mut ts_v).unwrap();
+    assert_eq!(reduction.point, out_m.point);
+    assert_eq!(reduction.final_claim, out_m.final_claim);
   }
 
   /// PCS boundary wiring: the coefficient-form point-transform adapter
