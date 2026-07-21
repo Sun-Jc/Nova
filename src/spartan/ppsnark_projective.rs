@@ -106,26 +106,28 @@ pub fn coeff_tensor_cross<E: Engine>(a: &[E::Scalar], r: &[E::Scalar]) -> E::Sca
 }
 
 /// The **monomial tensor** corner table `t[j] = ∏_{i∈j} r_i` (= ⊗_i (1, r_i)),
-/// MSB-first (bit `num_vars−1−c` ↔ `r[c]`). This is the coefficient-basis
-/// counterpart of the eval-basis `mem_row = EqPolynomial(r).evals()`: in coeff
-/// form the Spartan identity `coeffMLE(Az, r) = Σ_k t[row_k]·val_A,k·(z-gather)`
-/// weights each sparse entry by the *monomial* `∏_{i∈row_k} r_i`, not the eq
-/// weight eq̃(r, row_k). So `mem_row/mem_col` are built with this, not with
-/// `EqPolynomialProjective::evals`.
+/// MSB-first (bit `num_vars−1−c` ↔ `r[c]`). Built by tensor doubling in `O(N)`
+/// (not `O(N·m)`): each variable doubles the table, the high half scaled by
+/// `r_c`. This is the coefficient-basis counterpart of the eval-basis
+/// `mem_row = EqPolynomial(r).evals()`.
 pub fn coeff_tensor<F: Field>(r: &[F]) -> Vec<F> {
   let num_vars = r.len();
   let n = 1usize << num_vars;
-  (0..n)
-    .map(|j| {
-      let mut acc = F::ONE;
-      for (c, rc) in r.iter().enumerate() {
-        if (j >> (num_vars - 1 - c)) & 1 == 1 {
-          acc *= *rc;
-        }
-      }
-      acc
-    })
-    .collect()
+  let mut table = vec![F::ZERO; n];
+  table[0] = F::ONE;
+  // MSB-first: r[0] is the highest bit, so process from the top so that after
+  // step k the first 2^{k} entries hold the tensor over the top k variables.
+  let mut size = 1usize;
+  for &rc in r.iter().rev() {
+    // Low-bit-first doubling; r is reversed so the final layout is MSB-first.
+    let (lo, hi) = table.split_at_mut(size);
+    hi[..size]
+      .iter_mut()
+      .zip(lo.iter())
+      .for_each(|(h, l)| *h = *l * rc);
+    size <<= 1;
+  }
+  table
 }
 
 /// Builds the projective outer-relation virtual polynomial
@@ -331,6 +333,7 @@ use crate::{
   errors::NovaError,
   r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness},
   spartan::{
+    batch_invert,
     math::Math,
     powers,
     ppsnark::{ProverKey, VerifierKey},
@@ -347,6 +350,7 @@ use crate::{
   },
   Commitment, CommitmentKey,
 };
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Zero-pads `v` to length `n`.
@@ -525,35 +529,60 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     let gamma = transcript.squeeze(b"g")?;
     let r_mem = transcript.squeeze(b"r")?;
 
-    // Fingerprint tables (pointwise), coeff basis.
-    let id: Vec<E::Scalar> = (0..n as u64).map(E::Scalar::from).collect();
-    let t_row: Vec<E::Scalar> = (0..n).map(|i| mem_row[i] * gamma + id[i] + r_mem).collect();
+    // Fingerprint tables (pointwise), coeff basis. Built in parallel (flat
+    // par_iter, no nested rayon).
+    let id: Vec<E::Scalar> = (0..n as u64).into_par_iter().map(E::Scalar::from).collect();
+    let t_row: Vec<E::Scalar> = (0..n)
+      .into_par_iter()
+      .map(|i| mem_row[i] * gamma + id[i] + r_mem)
+      .collect();
     let w_row: Vec<E::Scalar> = (0..n)
+      .into_par_iter()
       .map(|i| L_row[i] * gamma + pk.S_repr.row[i] + r_mem)
       .collect();
-    let t_col: Vec<E::Scalar> = (0..n).map(|i| mem_col[i] * gamma + id[i] + r_mem).collect();
+    let t_col: Vec<E::Scalar> = (0..n)
+      .into_par_iter()
+      .map(|i| mem_col[i] * gamma + id[i] + r_mem)
+      .collect();
     let w_col_fp: Vec<E::Scalar> = (0..n)
+      .into_par_iter()
       .map(|i| L_col[i] * gamma + pk.S_repr.col[i] + r_mem)
       .collect();
 
-    let inv = |t: &[E::Scalar], ts: &[E::Scalar]| -> Vec<E::Scalar> {
-      (0..n)
-        .map(|i| ts[i] * Option::<E::Scalar>::from(t[i].invert()).unwrap_or(E::Scalar::ZERO))
+    // Inverses: concatenate all four fingerprint tables and run a SINGLE
+    // batch_invert (Montgomery batching turns 4N field inversions into 1
+    // inversion + O(N) mults). batch_invert parallelizes internally, so it runs
+    // sequentially w.r.t. the maps above — no nested rayon contention.
+    let all_fp: Vec<E::Scalar> = t_row
+      .iter()
+      .chain(w_row.iter())
+      .chain(t_col.iter())
+      .chain(w_col_fp.iter())
+      .copied()
+      .collect();
+    let all_inv = batch_invert(&all_fp)?;
+    // inv_i * TS_i (or *1 for the w-side), flat parallel.
+    let w_ones_scale = |inv: &[E::Scalar]| inv.to_vec();
+    let mul_ts = |inv: &[E::Scalar], ts: &[E::Scalar]| -> Vec<E::Scalar> {
+      inv
+        .par_iter()
+        .zip(ts.par_iter())
+        .map(|(a, b)| *a * *b)
         .collect()
     };
-    let ones: Vec<E::Scalar> = vec![E::Scalar::ONE; n];
-    let t_inv_row = inv(&t_row, &pk.S_repr.ts_row);
-    let w_inv_row = inv(&w_row, &ones);
-    let t_inv_col = inv(&t_col, &pk.S_repr.ts_col);
-    let w_inv_col = inv(&w_col_fp, &ones);
+    let t_inv_row = mul_ts(&all_inv[0..n], &pk.S_repr.ts_row);
+    let w_inv_row = w_ones_scale(&all_inv[n..2 * n]);
+    let t_inv_col = mul_ts(&all_inv[2 * n..3 * n], &pk.S_repr.ts_col);
+    let w_inv_col = w_ones_scale(&all_inv[3 * n..4 * n]);
 
-    let (comm_t_inv_row, comm_w_inv_row, comm_t_inv_col, comm_w_inv_col) = {
-      let a = E::CE::commit(ck, &t_inv_row, &E::Scalar::ZERO);
-      let b = E::CE::commit(ck, &w_inv_row, &E::Scalar::ZERO);
-      let cc = E::CE::commit(ck, &t_inv_col, &E::Scalar::ZERO);
-      let d = E::CE::commit(ck, &w_inv_col, &E::Scalar::ZERO);
-      (a, b, cc, d)
-    };
+    // Commit the four memory oracles. Each `commit` is itself a parallel MSM,
+    // so keep this loop sequential to avoid nesting parallel MSMs (which would
+    // contend for the same thread pool). The MSM's internal parallelism already
+    // saturates the cores.
+    let comm_t_inv_row = E::CE::commit(ck, &t_inv_row, &E::Scalar::ZERO);
+    let comm_w_inv_row = E::CE::commit(ck, &w_inv_row, &E::Scalar::ZERO);
+    let comm_t_inv_col = E::CE::commit(ck, &t_inv_col, &E::Scalar::ZERO);
+    let comm_w_inv_col = E::CE::commit(ck, &w_inv_col, &E::Scalar::ZERO);
     transcript.absorb(
       b"mem",
       &[
@@ -571,6 +600,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     // Build inner instances: memory (row/col × inv/T/W), inner ABC, inner E,
     // witness-bound. All lifted to degree 3 by the batcher.
     let val: Vec<E::Scalar> = (0..n)
+      .into_par_iter()
       .map(|i| pk.S_repr.val_A[i] + c * pk.S_repr.val_B[i] + c * c * pk.S_repr.val_C[i])
       .collect();
     let abc = build_inner_abc::<E>(num_rounds_inner, L_row.clone(), L_col.clone(), val);
