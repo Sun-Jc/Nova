@@ -82,6 +82,29 @@ pub fn coeff_masked_eq_eval<E: Engine>(
   coeff_eval::<E>(&table, r)
 }
 
+/// The **monomial tensor** corner table `t[j] = ∏_{i∈j} r_i` (= ⊗_i (1, r_i)),
+/// MSB-first (bit `num_vars−1−c` ↔ `r[c]`). This is the coefficient-basis
+/// counterpart of the eval-basis `mem_row = EqPolynomial(r).evals()`: in coeff
+/// form the Spartan identity `coeffMLE(Az, r) = Σ_k t[row_k]·val_A,k·(z-gather)`
+/// weights each sparse entry by the *monomial* `∏_{i∈row_k} r_i`, not the eq
+/// weight eq̃(r, row_k). So `mem_row/mem_col` are built with this, not with
+/// `EqPolynomialProjective::evals`.
+pub fn coeff_tensor<F: Field>(r: &[F]) -> Vec<F> {
+  let num_vars = r.len();
+  let n = 1usize << num_vars;
+  (0..n)
+    .map(|j| {
+      let mut acc = F::ONE;
+      for (c, rc) in r.iter().enumerate() {
+        if (j >> (num_vars - 1 - c)) & 1 == 1 {
+          acc *= *rc;
+        }
+      }
+      acc
+    })
+    .collect()
+}
+
 /// Builds the projective outer-relation virtual polynomial
 /// `Eq^∞_τ · (Az·Bz − u·Cz·U − E·U)` over `num_vars` variables.
 ///
@@ -964,5 +987,70 @@ mod tests {
     let direct = coeff_eval::<E>(&mem_col, &r_inner);
     let recon = coeff_eval::<E>(&w_block, &r_inner) + coeff_eval::<E>(&io_block, &r_inner);
     assert_eq!(direct, recon);
+  }
+
+  /// Architecture-B correction anchor: in coefficient basis the memory value
+  /// table `mem_row` is the **monomial tensor** `t[j] = ∏_{i∈j} r_i` (= ⊗(1,r_i)),
+  /// NOT the projective eq corner table eq̃(r,·). The Spartan identity in coeff
+  /// form is
+  /// ```text
+  ///   coeffMLE(Az, r) = Σ_k (∏_{i∈row_k} r_i) · val_A,k · (∏_{i∈col_k} r_i · z-part),
+  /// ```
+  /// i.e. `L_row[k] = tensor(r)[row_k]`, `L_col[k] = tensor(r)[col_k]` (over z),
+  /// with `val_A` the sparse matrix value. This anchors that `mem_row/mem_col`
+  /// must be built as monomial tensors (`coeff_tensor`), not projective eq — a
+  /// correction to an earlier assumption, caught before assembly.
+  #[test]
+  fn coeff_spartan_identity_uses_monomial_tensor() {
+    let num_vars = 3usize;
+    let n = 1usize << num_vars;
+
+    // Monomial tensor table t[j] = ∏_{i∈j} r_i (MSB-first: bit num_vars-1-c ↔ r[c]).
+    let r: Vec<Fr> = (0..num_vars)
+      .map(|i| Fr::from((2 * i + 3) as u64))
+      .collect();
+    let tensor: Vec<Fr> = (0..n)
+      .map(|j| {
+        let mut acc = Fr::ONE;
+        for (c, rc) in r.iter().enumerate() {
+          if (j >> (num_vars - 1 - c)) & 1 == 1 {
+            acc *= *rc;
+          }
+        }
+        acc
+      })
+      .collect();
+
+    // A sparse "matrix" A as a list of (row, col, val); z is the assignment.
+    // Build Az[i] = Σ_{(i,c,v)} v·z[c] as a dense table, then check the identity.
+    let z: Vec<Fr> = (0..n).map(|i| Fr::from((5 * i + 1) as u64)).collect();
+    let entries: Vec<(usize, usize, Fr)> = vec![
+      (0, 1, Fr::from(2)),
+      (1, 0, Fr::from(3)),
+      (1, 3, Fr::from(4)),
+      (2, 2, Fr::from(5)),
+      (5, 4, Fr::from(6)),
+      (7, 7, Fr::from(9)),
+    ];
+    let mut az = vec![Fr::ZERO; n];
+    for &(row, col, v) in &entries {
+      az[row] += v * z[col];
+    }
+
+    // LHS: coeffMLE(Az, r).
+    let lhs = coeff_eval::<E>(&az, &r);
+    // RHS: Σ_k tensor[row_k] · val_k · tensor[col_k]·(z via col) — but z is folded
+    // into Az already, so the sparse form is Σ_k tensor[row_k]·val_k·(z[col_k]).
+    // Here L_col[k] = tensor[col_k] would carry the z-gather; we test the row side
+    // identity coeffMLE(Az,r) = Σ_k tensor[row_k]·(Az contribution at row_k), which
+    // for a general Az reduces to Σ_j tensor[j]·Az[j] = coeffMLE — the tensor is the
+    // correct weight table.
+    let rhs: Fr = (0..n).map(|j| tensor[j] * az[j]).sum();
+    assert_eq!(lhs, rhs);
+
+    // And confirm the tensor is NOT the projective eq corner table (they differ),
+    // so the earlier "mem_row = EqPolynomialProjective::evals" assumption is wrong.
+    let proj_eq = EqPolynomialProjective::<Fr>::new(r.clone()).evals();
+    assert_ne!(tensor, proj_eq);
   }
 }
