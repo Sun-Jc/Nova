@@ -300,6 +300,599 @@ pub fn build_memory_side<E: Engine>(
   (inv, t_relation, w_relation)
 }
 
+// ===========================================================================
+// Full projective ppSNARK: RelaxedR1CSSNARKProjective
+// ===========================================================================
+
+use crate::{
+  errors::NovaError,
+  r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness},
+  spartan::{
+    math::Math,
+    powers,
+    ppsnark::{ProverKey, VerifierKey},
+    projective_sumcheck::{
+      batched::prove_batched, verify as sc_verify, ProjectiveSumcheckReduction,
+    },
+    PolyEvalInstance, PolyEvalWitness,
+  },
+  traits::{
+    commitment::CommitmentEngineTrait,
+    evaluation::EvaluationEngineTrait,
+    snark::{DigestHelperTrait, RelaxedR1CSSNARKTrait},
+    TranscriptEngineTrait,
+  },
+  Commitment, CommitmentKey,
+};
+use serde::{Deserialize, Serialize};
+
+/// Zero-pads `v` to length `n`.
+fn padded<E: Engine>(v: &[E::Scalar], n: usize) -> Vec<E::Scalar> {
+  let mut out = vec![E::Scalar::ZERO; n];
+  out[..v.len()].copy_from_slice(v);
+  out
+}
+
+/// Coefficient-basis evaluation oracles: like `R1CSShapeSparkRepr::evaluation_oracles`
+/// but `mem_row` is the **monomial tensor** `coeff_tensor(r_outer)` (not eval eq),
+/// per the coeff Spartan identity. `mem_col = z` padded; `L_row/L_col` gather.
+#[allow(clippy::type_complexity)]
+fn coeff_evaluation_oracles<E: Engine>(
+  s: &R1CSShape<E>,
+  n: usize,
+  r_outer: &[E::Scalar],
+  z: &[E::Scalar],
+) -> (
+  Vec<E::Scalar>,
+  Vec<E::Scalar>,
+  Vec<E::Scalar>,
+  Vec<E::Scalar>,
+) {
+  let mem_row = coeff_tensor(r_outer); // length N = 2^num_rounds_inner
+  let mem_col = padded::<E>(z, n);
+
+  let mut l_row = vec![mem_row[0]; n];
+  let mut l_col = vec![mem_col[n - 1]; n];
+  for (i, (vr, vc)) in s
+    .A
+    .iter()
+    .chain(s.B.iter())
+    .chain(s.C.iter())
+    .map(|(r, c, _)| (mem_row[r], mem_col[c]))
+    .enumerate()
+  {
+    l_row[i] = vr;
+    l_col[i] = vc;
+  }
+  (mem_row, mem_col, l_row, l_col)
+}
+
+/// A projective (coefficient-basis) ppSNARK. Reuses the eval-basis
+/// [`ProverKey`]/[`VerifierKey`] and their `setup` verbatim; the two sumcheck
+/// executions run in projective (coefficient) form, and every committed column
+/// is opened in coefficient form via `EE` (use a `CoeffEvaluationEngine`, e.g.
+/// `HyperKZGCoeffAdapter`).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct RelaxedR1CSSNARKProjective<E: Engine, EE: EvaluationEngineTrait<E>> {
+  comm_L_row: Commitment<E>,
+  comm_L_col: Commitment<E>,
+  comm_t_plus_r_inv_row: Commitment<E>,
+  comm_w_plus_r_inv_row: Commitment<E>,
+  comm_t_plus_r_inv_col: Commitment<E>,
+  comm_w_plus_r_inv_col: Commitment<E>,
+
+  sc_outer: crate::spartan::sumcheck::SumcheckProof<E>,
+  eval_Az_at_r_outer: E::Scalar,
+  eval_Bz_at_r_outer: E::Scalar,
+  eval_Cz_at_r_outer: E::Scalar,
+  eval_E_at_r_outer: E::Scalar,
+
+  sc_inner: crate::spartan::sumcheck::SumcheckProof<E>,
+  eval_E: E::Scalar,
+  eval_L_row: E::Scalar,
+  eval_L_col: E::Scalar,
+  eval_val_A: E::Scalar,
+  eval_val_B: E::Scalar,
+  eval_val_C: E::Scalar,
+  eval_W: E::Scalar,
+  eval_t_plus_r_inv_row: E::Scalar,
+  eval_row: E::Scalar,
+  eval_w_plus_r_inv_row: E::Scalar,
+  eval_ts_row: E::Scalar,
+  eval_t_plus_r_inv_col: E::Scalar,
+  eval_col: E::Scalar,
+  eval_w_plus_r_inv_col: E::Scalar,
+  eval_ts_col: E::Scalar,
+
+  eval_arg: EE::EvaluationArgument,
+}
+
+impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
+  for RelaxedR1CSSNARKProjective<E, EE>
+{
+  type ProverKey = ProverKey<E, EE>;
+  type VerifierKey = VerifierKey<E, EE>;
+
+  fn ck_floor() -> Box<dyn for<'a> Fn(&'a R1CSShape<E>) -> usize> {
+    Box::new(|shape: &R1CSShape<E>| -> usize { shape.A.len() + shape.B.len() + shape.C.len() })
+  }
+
+  fn setup(
+    ck: &CommitmentKey<E>,
+    S: &R1CSShape<E>,
+  ) -> Result<(Self::ProverKey, Self::VerifierKey), NovaError> {
+    // Reuse the eval-basis setup verbatim (keys/S_repr/commitments are
+    // basis-independent).
+    <crate::spartan::ppsnark::RelaxedR1CSSNARK<E, EE> as RelaxedR1CSSNARKTrait<E>>::setup(ck, S)
+  }
+
+  fn prove(
+    ck: &CommitmentKey<E>,
+    pk: &Self::ProverKey,
+    S: &R1CSShape<E>,
+    U: &RelaxedR1CSInstance<E>,
+    W: &RelaxedR1CSWitness<E>,
+  ) -> Result<Self, NovaError> {
+    let S = S.pad();
+    assert!(S.is_regular_shape());
+    let W = W.pad(&S);
+
+    let mut transcript = E::TE::new(b"RelaxedR1CSSNARKProjective");
+    transcript.absorb(b"vk", &pk.vk_digest);
+    transcript.absorb(b"U", U);
+
+    let z = [W.W.clone(), vec![U.u], U.X.clone()].concat();
+    let (Az, Bz, Cz) = S.multiply_vec(&z)?;
+
+    let num_rounds_inner = pk.S_repr.N.log_2();
+    // Full-length outer (coeff basis): run over all N rounds so the outer point
+    // matches the inner point space directly (no zero-pad factor gymnastics —
+    // coeff padding factor is 1, §anchor). Pad Az/Bz/Cz/E to N.
+    let n = pk.S_repr.N;
+    let az = padded::<E>(&Az, n);
+    let bz = padded::<E>(&Bz, n);
+    let cz = padded::<E>(&Cz, n);
+    let e_col = padded::<E>(&W.E, n);
+    let w_col = padded::<E>(&W.W, n);
+
+    let tau = (0..num_rounds_inner)
+      .map(|_| transcript.squeeze(b"t"))
+      .collect::<Result<Vec<_>, NovaError>>()?;
+
+    // Step 1: projective outer ZeroCheck Eq^∞_τ·(Az·Bz − u·Cz·U − E·U).
+    let outer = build_outer::<E>(
+      num_rounds_inner,
+      az.clone(),
+      bz.clone(),
+      cz.clone(),
+      e_col.clone(),
+      U.u,
+      &tau,
+    );
+    let out_outer = outer.prove(&mut transcript);
+    let r_outer = out_outer.point.clone();
+
+    // Outer claims (coeff-form evaluations at r_outer).
+    let eval_Az_at_r_outer = coeff_eval::<E>(&az, &r_outer);
+    let eval_Bz_at_r_outer = coeff_eval::<E>(&bz, &r_outer);
+    let eval_Cz_at_r_outer = coeff_eval::<E>(&cz, &r_outer);
+    let eval_E_at_r_outer = coeff_eval::<E>(&e_col, &r_outer);
+
+    transcript.absorb(
+      b"e",
+      &[
+        eval_Az_at_r_outer,
+        eval_Bz_at_r_outer,
+        eval_Cz_at_r_outer,
+        eval_E_at_r_outer,
+      ]
+      .as_slice(),
+    );
+
+    // Step 2: memory oracles + inner batched sumcheck.
+    let (mem_row, mem_col, L_row, L_col) = coeff_evaluation_oracles::<E>(&S, n, &r_outer, &z);
+    let (comm_L_row, comm_L_col) = rayon::join(
+      || E::CE::commit(ck, &L_row, &E::Scalar::ZERO),
+      || E::CE::commit(ck, &L_col, &E::Scalar::ZERO),
+    );
+    transcript.absorb(b"L", &[comm_L_row, comm_L_col].as_slice());
+
+    let c = transcript.squeeze(b"c")?;
+    let gamma = transcript.squeeze(b"g")?;
+    let r_mem = transcript.squeeze(b"r")?;
+
+    // Fingerprint tables (pointwise), coeff basis.
+    let id: Vec<E::Scalar> = (0..n as u64).map(E::Scalar::from).collect();
+    let t_row: Vec<E::Scalar> = (0..n).map(|i| mem_row[i] * gamma + id[i] + r_mem).collect();
+    let w_row: Vec<E::Scalar> = (0..n)
+      .map(|i| L_row[i] * gamma + pk.S_repr.row[i] + r_mem)
+      .collect();
+    let t_col: Vec<E::Scalar> = (0..n).map(|i| mem_col[i] * gamma + id[i] + r_mem).collect();
+    let w_col_fp: Vec<E::Scalar> = (0..n)
+      .map(|i| L_col[i] * gamma + pk.S_repr.col[i] + r_mem)
+      .collect();
+
+    let inv = |t: &[E::Scalar], ts: &[E::Scalar]| -> Vec<E::Scalar> {
+      (0..n)
+        .map(|i| ts[i] * Option::<E::Scalar>::from(t[i].invert()).unwrap_or(E::Scalar::ZERO))
+        .collect()
+    };
+    let ones: Vec<E::Scalar> = vec![E::Scalar::ONE; n];
+    let t_inv_row = inv(&t_row, &pk.S_repr.ts_row);
+    let w_inv_row = inv(&w_row, &ones);
+    let t_inv_col = inv(&t_col, &pk.S_repr.ts_col);
+    let w_inv_col = inv(&w_col_fp, &ones);
+
+    let (comm_t_inv_row, comm_w_inv_row, comm_t_inv_col, comm_w_inv_col) = {
+      let a = E::CE::commit(ck, &t_inv_row, &E::Scalar::ZERO);
+      let b = E::CE::commit(ck, &w_inv_row, &E::Scalar::ZERO);
+      let cc = E::CE::commit(ck, &t_inv_col, &E::Scalar::ZERO);
+      let d = E::CE::commit(ck, &w_inv_col, &E::Scalar::ZERO);
+      (a, b, cc, d)
+    };
+    transcript.absorb(
+      b"mem",
+      &[
+        comm_t_inv_row,
+        comm_w_inv_row,
+        comm_t_inv_col,
+        comm_w_inv_col,
+      ]
+      .as_slice(),
+    );
+    let rho = (0..num_rounds_inner)
+      .map(|_| transcript.squeeze(b"rho"))
+      .collect::<Result<Vec<_>, NovaError>>()?;
+
+    // Build inner instances: memory (row/col × inv/T/W), inner ABC, inner E,
+    // witness-bound. All lifted to degree 3 by the batcher.
+    let val: Vec<E::Scalar> = (0..n)
+      .map(|i| pk.S_repr.val_A[i] + c * pk.S_repr.val_B[i] + c * c * pk.S_repr.val_C[i])
+      .collect();
+    let abc = build_inner_abc::<E>(num_rounds_inner, L_row.clone(), L_col.clone(), val);
+    let inner_e = build_inner_e::<E>(num_rounds_inner, e_col.clone(), &r_outer);
+    let wb = build_witness_bound::<E>(num_rounds_inner, w_col.clone(), &tau, S.num_vars.log_2());
+    let (row_inv_inst, row_t, row_w) = build_memory_side::<E>(
+      num_rounds_inner,
+      t_inv_row.clone(),
+      w_inv_row.clone(),
+      t_row.clone(),
+      w_row.clone(),
+      pk.S_repr.ts_row.clone(),
+      &rho,
+    );
+    let (col_inv_inst, col_t, col_w) = build_memory_side::<E>(
+      num_rounds_inner,
+      t_inv_col.clone(),
+      w_inv_col.clone(),
+      t_col.clone(),
+      w_col_fp.clone(),
+      pk.S_repr.ts_col.clone(),
+      &rho,
+    );
+
+    let out_inner = prove_batched::<E>(
+      vec![
+        row_inv_inst,
+        row_t,
+        row_w,
+        col_inv_inst,
+        col_t,
+        col_w,
+        abc,
+        inner_e,
+        wb,
+      ],
+      &mut transcript,
+    );
+    let r_inner = out_inner.point.clone();
+
+    // Openings at r_inner (coeff-form).
+    let eval_W = coeff_eval::<E>(&w_col, &r_inner);
+    let eval_E = coeff_eval::<E>(&e_col, &r_inner);
+    let eval_L_row = coeff_eval::<E>(&L_row, &r_inner);
+    let eval_L_col = coeff_eval::<E>(&L_col, &r_inner);
+    let eval_val_A = coeff_eval::<E>(&pk.S_repr.val_A, &r_inner);
+    let eval_val_B = coeff_eval::<E>(&pk.S_repr.val_B, &r_inner);
+    let eval_val_C = coeff_eval::<E>(&pk.S_repr.val_C, &r_inner);
+    let eval_row = coeff_eval::<E>(&pk.S_repr.row, &r_inner);
+    let eval_col = coeff_eval::<E>(&pk.S_repr.col, &r_inner);
+    let eval_t_plus_r_inv_row = coeff_eval::<E>(&t_inv_row, &r_inner);
+    let eval_w_plus_r_inv_row = coeff_eval::<E>(&w_inv_row, &r_inner);
+    let eval_ts_row = coeff_eval::<E>(&pk.S_repr.ts_row, &r_inner);
+    let eval_t_plus_r_inv_col = coeff_eval::<E>(&t_inv_col, &r_inner);
+    let eval_w_plus_r_inv_col = coeff_eval::<E>(&w_inv_col, &r_inner);
+    let eval_ts_col = coeff_eval::<E>(&pk.S_repr.ts_col, &r_inner);
+
+    // Batched PCS opening of all committed columns at r_inner.
+    let comm_vec = [
+      U.comm_W,
+      U.comm_E,
+      comm_L_row,
+      comm_L_col,
+      pk.S_comm.comm_val_A,
+      pk.S_comm.comm_val_B,
+      pk.S_comm.comm_val_C,
+      comm_t_inv_row,
+      pk.S_comm.comm_row,
+      comm_w_inv_row,
+      pk.S_comm.comm_ts_row,
+      comm_t_inv_col,
+      pk.S_comm.comm_col,
+      comm_w_inv_col,
+      pk.S_comm.comm_ts_col,
+    ];
+    let eval_vec = [
+      eval_W,
+      eval_E,
+      eval_L_row,
+      eval_L_col,
+      eval_val_A,
+      eval_val_B,
+      eval_val_C,
+      eval_t_plus_r_inv_row,
+      eval_row,
+      eval_w_plus_r_inv_row,
+      eval_ts_row,
+      eval_t_plus_r_inv_col,
+      eval_col,
+      eval_w_plus_r_inv_col,
+      eval_ts_col,
+    ];
+    let poly_vec = [
+      &w_col,
+      &e_col,
+      &L_row,
+      &L_col,
+      &pk.S_repr.val_A,
+      &pk.S_repr.val_B,
+      &pk.S_repr.val_C,
+      &t_inv_row,
+      &pk.S_repr.row,
+      &w_inv_row,
+      &pk.S_repr.ts_row,
+      &t_inv_col,
+      &pk.S_repr.col,
+      &w_inv_col,
+      &pk.S_repr.ts_col,
+    ];
+    transcript.absorb(b"e", &eval_vec.as_slice());
+    let c_pcs = transcript.squeeze(b"c")?;
+    let w_pe: PolyEvalWitness<E> = PolyEvalWitness::batch(&poly_vec, &c_pcs);
+    let u_pe: PolyEvalInstance<E> = PolyEvalInstance::batch(&comm_vec, &r_inner, &eval_vec, &c_pcs);
+    let eval_arg = EE::prove(
+      ck,
+      &pk.pk_ee,
+      &mut transcript,
+      &u_pe.c,
+      &w_pe.p,
+      &r_inner,
+      &u_pe.e,
+    )?;
+
+    Ok(RelaxedR1CSSNARKProjective {
+      comm_L_row,
+      comm_L_col,
+      comm_t_plus_r_inv_row: comm_t_inv_row,
+      comm_w_plus_r_inv_row: comm_w_inv_row,
+      comm_t_plus_r_inv_col: comm_t_inv_col,
+      comm_w_plus_r_inv_col: comm_w_inv_col,
+      sc_outer: out_outer.proof,
+      eval_Az_at_r_outer,
+      eval_Bz_at_r_outer,
+      eval_Cz_at_r_outer,
+      eval_E_at_r_outer,
+      sc_inner: out_inner.proof,
+      eval_E,
+      eval_L_row,
+      eval_L_col,
+      eval_val_A,
+      eval_val_B,
+      eval_val_C,
+      eval_W,
+      eval_t_plus_r_inv_row,
+      eval_row,
+      eval_w_plus_r_inv_row,
+      eval_ts_row,
+      eval_t_plus_r_inv_col,
+      eval_col,
+      eval_w_plus_r_inv_col,
+      eval_ts_col,
+      eval_arg,
+    })
+  }
+
+  fn verify(&self, vk: &Self::VerifierKey, U: &RelaxedR1CSInstance<E>) -> Result<(), NovaError> {
+    let mut transcript = E::TE::new(b"RelaxedR1CSSNARKProjective");
+    transcript.absorb(b"vk", &vk.digest());
+    transcript.absorb(b"U", U);
+
+    let num_rounds_inner = vk.S_comm.N.log_2();
+    let tau = (0..num_rounds_inner)
+      .map(|_| transcript.squeeze(b"t"))
+      .collect::<Result<Vec<_>, NovaError>>()?;
+
+    // Step 1: verify projective outer, reconstruct its final claim.
+    let db_outer = vec![3usize; num_rounds_inner];
+    let red_outer: ProjectiveSumcheckReduction<E> =
+      sc_verify::<E>(E::Scalar::ZERO, &db_outer, &self.sc_outer, &mut transcript)?;
+    let r_outer = red_outer.point.clone();
+    let u_r_outer: E::Scalar = r_outer
+      .iter()
+      .fold(E::Scalar::ONE, |a, ri| a * (E::Scalar::ONE + *ri));
+    let eq_tau_at_r_outer = coeff_eq_eval::<E>(&tau, &r_outer);
+    let outer_expected = eq_tau_at_r_outer
+      * (self.eval_Az_at_r_outer * self.eval_Bz_at_r_outer
+        - U.u * self.eval_Cz_at_r_outer * u_r_outer
+        - self.eval_E_at_r_outer * u_r_outer);
+    if outer_expected != red_outer.final_claim {
+      return Err(NovaError::InvalidSumcheckProof);
+    }
+
+    transcript.absorb(
+      b"e",
+      &[
+        self.eval_Az_at_r_outer,
+        self.eval_Bz_at_r_outer,
+        self.eval_Cz_at_r_outer,
+        self.eval_E_at_r_outer,
+      ]
+      .as_slice(),
+    );
+
+    // Step 2: memory + inner batched.
+    transcript.absorb(b"L", &[self.comm_L_row, self.comm_L_col].as_slice());
+    let c = transcript.squeeze(b"c")?;
+    let gamma = transcript.squeeze(b"g")?;
+    let r_mem = transcript.squeeze(b"r")?;
+    transcript.absorb(
+      b"mem",
+      &[
+        self.comm_t_plus_r_inv_row,
+        self.comm_w_plus_r_inv_row,
+        self.comm_t_plus_r_inv_col,
+        self.comm_w_plus_r_inv_col,
+      ]
+      .as_slice(),
+    );
+    let rho = (0..num_rounds_inner)
+      .map(|_| transcript.squeeze(b"rho"))
+      .collect::<Result<Vec<_>, NovaError>>()?;
+
+    let db_inner = vec![3usize; num_rounds_inner];
+    // The batcher squeezes λ before the shared rounds; mirror it.
+    let lambda = transcript.squeeze(b"projective_sumcheck_batch")?;
+    let lambda_pows = powers::<E>(&lambda, 9);
+    // Joint initial claim = Σ λⁱ · claim0ᵢ. Instances (prove order):
+    //   [0..6): memory row/col × {inv, T, W} — all initial claim 0 (inv is the
+    //           multiset balance = 0 for honest data; T/W are eq-ZeroChecks).
+    //   6: inner ABC — claim0 = eval_Az + c·eval_Bz + c²·eval_Cz (coeff Spartan
+    //      identity; padding factor = 1).
+    //   7: inner E  — claim0 = eval_E_at_r_outer.
+    //   8: witness-bound — claim0 = 0.
+    let abc_init =
+      self.eval_Az_at_r_outer + c * self.eval_Bz_at_r_outer + c * c * self.eval_Cz_at_r_outer;
+    let joint_init = lambda_pows[6] * abc_init + lambda_pows[7] * self.eval_E_at_r_outer;
+    let red_inner: ProjectiveSumcheckReduction<E> =
+      sc_verify::<E>(joint_init, &db_inner, &self.sc_inner, &mut transcript)?;
+    let r_inner = red_inner.point.clone();
+
+    // Reconstruct the joint inner final claim from per-factor coeff evals.
+    let u_r_inner: E::Scalar = r_inner
+      .iter()
+      .fold(E::Scalar::ONE, |a, ri| a * (E::Scalar::ONE + *ri));
+    let eq_rho_at_r_inner = coeff_eq_eval::<E>(&rho, &r_inner);
+    let eq_r_outer_at_r_inner = coeff_eval::<E>(&coeff_tensor(&r_outer), &r_inner); // mem_row(r_inner) via tensor
+    let id_at_r_inner = coeff_identity_eval::<E>(num_rounds_inner, &r_inner);
+
+    // Fingerprint reconstructions at r_inner.
+    let t_row_at = gamma * eq_r_outer_at_r_inner + id_at_r_inner + r_mem * u_r_inner;
+    let w_row_at = gamma * self.eval_L_row + self.eval_row + r_mem * u_r_inner;
+    // mem_col(r_inner) = coeffMLE(z_padded, r_inner). By linearity (anchor 6) this
+    // splits into the W block [0, num_vars) plus the public IO block [u, X] at
+    // [num_vars, 2·num_vars). eval_W already covers the W block; the verifier
+    // builds the IO block from the public instance and evaluates it in coeff form.
+    let mem_col_at = {
+      let nv = vk.num_vars;
+      let big_n = 1usize << num_rounds_inner;
+      let mut io_block = vec![E::Scalar::ZERO; big_n];
+      // z = [W, u, X], so IO starts at index nv.
+      io_block[nv] = U.u;
+      for (j, x) in U.X.iter().enumerate() {
+        io_block[nv + 1 + j] = *x;
+      }
+      self.eval_W + coeff_eval::<E>(&io_block, &r_inner)
+    };
+    let t_col_at = gamma * mem_col_at + id_at_r_inner + r_mem * u_r_inner;
+    let w_col_at = gamma * self.eval_L_col + self.eval_col + r_mem * u_r_inner;
+
+    let masked_eq_at = coeff_masked_eq_eval::<E>(&tau, vk.num_vars.log_2(), &r_inner);
+
+    // Per-instance final claims (order matches prove's batch). Each instance is
+    // U-homogenized to degree 3, so a term of native degree d carries an extra
+    // U(r)^(3−d) factor; the batcher lifts lower-degree instances similarly.
+    //   inv:    native deg 1 → batcher lifts ×U² . claim = (t_inv − w_inv)·U²
+    //   T:      Eq·(t_inv·(T+r) − TS·U) already deg 3.  (TS term: one U)
+    //   W:      Eq·(w_inv·(W+r) − ones·U); ones evaluates to U(r), so the const
+    //           term is −Eq·U·U = −Eq·U².
+    //   ABC:    native deg 3, no U.
+    //   E:      Eq·E native deg 2 → batcher lifts ×U¹.
+    //   wit:    maskedEq·W native deg 2 → batcher lifts ×U¹.
+    let u2 = u_r_inner * u_r_inner;
+    let f0 = (self.eval_t_plus_r_inv_row - self.eval_w_plus_r_inv_row) * u2;
+    let f1 =
+      eq_rho_at_r_inner * (self.eval_t_plus_r_inv_row * t_row_at - self.eval_ts_row * u_r_inner);
+    let f2 = eq_rho_at_r_inner * (self.eval_w_plus_r_inv_row * w_row_at - u2);
+    let f3 = (self.eval_t_plus_r_inv_col - self.eval_w_plus_r_inv_col) * u2;
+    let f4 =
+      eq_rho_at_r_inner * (self.eval_t_plus_r_inv_col * t_col_at - self.eval_ts_col * u_r_inner);
+    let f5 = eq_rho_at_r_inner * (self.eval_w_plus_r_inv_col * w_col_at - u2);
+    let val_at = self.eval_val_A + c * self.eval_val_B + c * c * self.eval_val_C;
+    let f6 = self.eval_L_row * self.eval_L_col * val_at;
+    let f7 = eq_r_outer_at_r_inner * self.eval_E * u_r_inner;
+    let f8 = masked_eq_at * self.eval_W * u_r_inner;
+
+    let per = [f0, f1, f2, f3, f4, f5, f6, f7, f8];
+    let inner_expected: E::Scalar = per
+      .iter()
+      .zip(lambda_pows.iter())
+      .map(|(f, l)| *f * *l)
+      .sum();
+    if inner_expected != red_inner.final_claim {
+      return Err(NovaError::InvalidSumcheckProof);
+    }
+
+    // Verify the batched PCS opening.
+    let comm_vec = [
+      U.comm_W,
+      U.comm_E,
+      self.comm_L_row,
+      self.comm_L_col,
+      vk.S_comm.comm_val_A,
+      vk.S_comm.comm_val_B,
+      vk.S_comm.comm_val_C,
+      self.comm_t_plus_r_inv_row,
+      vk.S_comm.comm_row,
+      self.comm_w_plus_r_inv_row,
+      vk.S_comm.comm_ts_row,
+      self.comm_t_plus_r_inv_col,
+      vk.S_comm.comm_col,
+      self.comm_w_plus_r_inv_col,
+      vk.S_comm.comm_ts_col,
+    ];
+    let eval_vec = [
+      self.eval_W,
+      self.eval_E,
+      self.eval_L_row,
+      self.eval_L_col,
+      self.eval_val_A,
+      self.eval_val_B,
+      self.eval_val_C,
+      self.eval_t_plus_r_inv_row,
+      self.eval_row,
+      self.eval_w_plus_r_inv_row,
+      self.eval_ts_row,
+      self.eval_t_plus_r_inv_col,
+      self.eval_col,
+      self.eval_w_plus_r_inv_col,
+      self.eval_ts_col,
+    ];
+    transcript.absorb(b"e", &eval_vec.as_slice());
+    let c_pcs = transcript.squeeze(b"c")?;
+    let u_pe: PolyEvalInstance<E> = PolyEvalInstance::batch(&comm_vec, &r_inner, &eval_vec, &c_pcs);
+    EE::verify(
+      &vk.vk_ee,
+      &mut transcript,
+      &u_pe.c,
+      &r_inner,
+      &u_pe.e,
+      &self.eval_arg,
+    )?;
+    Ok(())
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1052,5 +1645,42 @@ mod tests {
     // so the earlier "mem_row = EqPolynomialProjective::evals" assumption is wrong.
     let proj_eq = EqPolynomialProjective::<Fr>::new(r.clone()).evals();
     assert_ne!(tensor, proj_eq);
+  }
+
+  /// THE end-to-end gate: a full projective ppSNARK prove→verify round-trip on
+  /// a real satisfying R1CS instance, via DirectSNARK with the coefficient-form
+  /// HyperKZG adapter as EE. Proves the whole assembly is sound.
+  #[test]
+  fn e2e_projective_ppsnark_direct() {
+    use crate::{
+      provider::{coeff_eval_adapter::HyperKZGCoeffAdapter, Bn256EngineKZG},
+      spartan::direct::DirectSNARK,
+      traits::circuit::NonTrivialCircuit,
+    };
+
+    type Ek = Bn256EngineKZG;
+    type EEc = HyperKZGCoeffAdapter<Ek>;
+    type Sp = RelaxedR1CSSNARKProjective<Ek, EEc>;
+
+    let circuit = NonTrivialCircuit::<<Ek as crate::traits::Engine>::Scalar>::new(4);
+    let (pk, vk) = DirectSNARK::<Ek, Sp, NonTrivialCircuit<_>>::setup(circuit.clone()).unwrap();
+
+    let z0 = vec![<Ek as crate::traits::Engine>::Scalar::from(7)];
+    let res = DirectSNARK::prove(&pk, circuit.clone(), &z0);
+    assert!(
+      res.is_ok(),
+      "projective ppSNARK prove failed: {:?}",
+      res.err()
+    );
+    let snark = res.unwrap();
+
+    // NonTrivialCircuit(num_cons=4) computes z -> z^(2^4) = z^16.
+    let z0v = <Ek as crate::traits::Engine>::Scalar::from(7);
+    let mut z1 = z0v;
+    for _ in 0..4 {
+      z1 = z1 * z1;
+    }
+    let io: Vec<<Ek as crate::traits::Engine>::Scalar> = vec![z0v, z1];
+    assert!(snark.verify(&vk, &io).is_ok());
   }
 }
