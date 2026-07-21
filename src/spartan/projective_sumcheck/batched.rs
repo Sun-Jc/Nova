@@ -41,6 +41,10 @@ pub struct BatchedProverOutput<E: Engine> {
   pub final_claim: E::Scalar,
   /// Per-instance reduced claims `G_i(r)`, in input order.
   pub per_instance_final: Vec<E::Scalar>,
+  /// Per-instance bound factor values `F_j(r)` (factor order), one inner vector
+  /// per instance. Lets the caller reuse the sumcheck's own binding as each
+  /// factor's opening at `r`, avoiding an O(N) MLE re-evaluation per column.
+  pub per_instance_bound_factors: Vec<Vec<E::Scalar>>,
 }
 
 /// Proves a batch of [`VirtualPolynomial`] instances in one sumcheck execution.
@@ -121,6 +125,8 @@ pub fn prove_batched<E: Engine>(
   }
 
   let per_instance_final: Vec<E::Scalar> = instances.iter().map(|i| i.reduced_claim()).collect();
+  let per_instance_bound_factors: Vec<Vec<E::Scalar>> =
+    instances.iter().map(|i| i.bound_factor_values()).collect();
   let final_claim: E::Scalar = per_instance_final
     .iter()
     .zip(coeffs.iter())
@@ -134,6 +140,7 @@ pub fn prove_batched<E: Engine>(
     point,
     final_claim,
     per_instance_final,
+    per_instance_bound_factors,
   }
 }
 

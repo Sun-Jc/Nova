@@ -328,6 +328,14 @@ impl<E: Engine> VirtualPolynomial<E> {
       .map(|(coeff, idxs)| idxs.iter().fold(*coeff, |acc, &j| acc * self.factors[j][0]))
       .sum()
   }
+
+  /// After all variables are bound, each factor table has collapsed to a single
+  /// value `F_j(r)`. Returns those values in factor order, so a caller can reuse
+  /// the sumcheck's own binding as the opening of each factor at `r` instead of
+  /// recomputing an O(N) MLE evaluation.
+  pub(crate) fn bound_factor_values(&self) -> Vec<E::Scalar> {
+    self.factors.iter().map(|f| f[0]).collect()
+  }
 }
 
 #[cfg(test)]

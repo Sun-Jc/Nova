@@ -611,22 +611,36 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTrait<E>
     );
     let r_inner = out_inner.point.clone();
 
-    // Openings at r_inner (coeff-form).
-    let eval_W = coeff_eval::<E>(&w_col, &r_inner);
-    let eval_E = coeff_eval::<E>(&e_col, &r_inner);
-    let eval_L_row = coeff_eval::<E>(&L_row, &r_inner);
-    let eval_L_col = coeff_eval::<E>(&L_col, &r_inner);
+    // Openings at r_inner. Reuse the sumcheck's own factor binding for the
+    // columns that appear as factors (the batcher collapsed each factor table to
+    // F_j(r_inner) for free), and only explicitly evaluate the columns that are
+    // NOT sumcheck factors (val_{A,B,C}, row, col) — mirroring the eval-basis
+    // prover, which likewise gets most openings for free from the sumcheck.
+    // Batch order & factor layouts (see the builders):
+    //   [0] row_inv = [t_inv_row, w_inv_row]
+    //   [1] row_t   = [eq, t_inv_row, t_row, ts_row, U]
+    //   [3] col_inv = [t_inv_col, w_inv_col]
+    //   [4] col_t   = [eq, t_inv_col, t_col, ts_col, U]
+    //   [6] abc     = [L_row, L_col, val]
+    //   [7] inner_e = [eq, e_col]
+    //   [8] wb      = [masked_eq, w_col]
+    let bf = &out_inner.per_instance_bound_factors;
+    let eval_W = bf[8][1]; // wb: w_col
+    let eval_E = bf[7][1]; // inner_e: e_col
+    let eval_L_row = bf[6][0]; // abc: L_row
+    let eval_L_col = bf[6][1]; // abc: L_col
+    let eval_t_plus_r_inv_row = bf[0][0]; // row_inv: t_inv_row
+    let eval_w_plus_r_inv_row = bf[0][1]; // row_inv: w_inv_row
+    let eval_ts_row = bf[1][3]; // row_t: ts_row
+    let eval_t_plus_r_inv_col = bf[3][0]; // col_inv: t_inv_col
+    let eval_w_plus_r_inv_col = bf[3][1]; // col_inv: w_inv_col
+    let eval_ts_col = bf[4][3]; // col_t: ts_col
+                                // Only these 5 are not sumcheck factors — evaluate explicitly (as eval does).
     let eval_val_A = coeff_eval::<E>(&pk.S_repr.val_A, &r_inner);
     let eval_val_B = coeff_eval::<E>(&pk.S_repr.val_B, &r_inner);
     let eval_val_C = coeff_eval::<E>(&pk.S_repr.val_C, &r_inner);
     let eval_row = coeff_eval::<E>(&pk.S_repr.row, &r_inner);
     let eval_col = coeff_eval::<E>(&pk.S_repr.col, &r_inner);
-    let eval_t_plus_r_inv_row = coeff_eval::<E>(&t_inv_row, &r_inner);
-    let eval_w_plus_r_inv_row = coeff_eval::<E>(&w_inv_row, &r_inner);
-    let eval_ts_row = coeff_eval::<E>(&pk.S_repr.ts_row, &r_inner);
-    let eval_t_plus_r_inv_col = coeff_eval::<E>(&t_inv_col, &r_inner);
-    let eval_w_plus_r_inv_col = coeff_eval::<E>(&w_inv_col, &r_inner);
-    let eval_ts_col = coeff_eval::<E>(&pk.S_repr.ts_col, &r_inner);
 
     // Batched PCS opening of all committed columns at r_inner.
     let comm_vec = [
