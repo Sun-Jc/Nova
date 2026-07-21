@@ -1,5 +1,5 @@
 //! `EqPolynomialProjective`: the **coefficient-form (projective)** equality
-//! polynomial, the drop-in analogue of [`EqPolynomial`](super::eq::EqPolynomial)
+//! polynomial, the drop-in analogue of `EqPolynomial` (`super::eq`)
 //! for Projective SumCheck over the infinity hypercube `{0,∞}^n`.
 //!
 //! Where the ordinary equality MLE uses per-variable factors
@@ -29,7 +29,7 @@
 //!
 //! This is a structured factor: it is described by `O(n)` data (`ρ`) and never
 //! needs to be materialized as a dense `2^n` table for its finite-point value.
-//! [`evals`](EqPolynomialProjective::evals) is provided for reference/testing;
+//! `evals` (`EqPolynomialProjective::evals`) is provided for reference/testing;
 //! a factorized prover should consume the structured form instead.
 
 use ff::PrimeField;
