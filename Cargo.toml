@@ -84,6 +84,10 @@ harness = false
 name = "ppsnark_projective"
 harness = false
 
+[[bench]]
+name = "ppsnark_e2e"
+harness = false
+
 [[example]]
 name = "ptau_test_setup"
 required-features = ["test-utils", "io"]
