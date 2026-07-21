@@ -490,7 +490,7 @@ impl<E: Engine> EqFactoredVirtualPolynomial<E> {
       let msg = self.round_message();
       let poly =
         UniPoly::<E::Scalar>::from_coeffs_no_trim(msg).expect("degree D+1 >= 2 coefficients");
-      transcript.absorb(b"projective_sumcheck_round", &poly);
+      super::absorb_round::<E>(transcript, &poly);
       let r_i = transcript
         .squeeze(b"projective_sumcheck_challenge")
         .expect("transcript squeeze failed");

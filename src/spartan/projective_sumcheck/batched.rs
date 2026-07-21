@@ -109,7 +109,7 @@ pub fn prove_batched<E: Engine>(
     let poly = UniPoly::<E::Scalar>::from_coeffs_no_trim(combined)
       .expect("combined round polynomial has D+1 >= 2 coefficients");
 
-    transcript.absorb(b"projective_sumcheck_round", &poly);
+    super::absorb_round::<E>(transcript, &poly);
     let r_i = transcript
       .squeeze(b"projective_sumcheck_challenge")
       .expect("transcript squeeze failed");
@@ -277,7 +277,7 @@ pub fn prove_batched_mixed<E: Engine>(
     let poly = UniPoly::<E::Scalar>::from_coeffs_no_trim(combined)
       .expect("combined round polynomial has D+1 >= 2 coefficients");
 
-    transcript.absorb(b"projective_sumcheck_round", &poly);
+    super::absorb_round::<E>(transcript, &poly);
     let r_i = transcript
       .squeeze(b"projective_sumcheck_challenge")
       .expect("transcript squeeze failed");
