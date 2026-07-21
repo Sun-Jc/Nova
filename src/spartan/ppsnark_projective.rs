@@ -859,4 +859,48 @@ mod tests {
 
     assert_eq!(direct, recon);
   }
+
+  /// Architecture-B anchor for the column memory value `mem_col = z` (z = [W, u,
+  /// X] zero-padded to N). By coeffMLE linearity, `coeffMLE(mem_col, r_inner) =
+  /// coeffMLE(W_padded, r_inner) + coeffMLE(io_shifted, r_inner)` where W and the
+  /// (u, X) IO block occupy disjoint index ranges. This is the coeff-form
+  /// counterpart of the eval-basis `eval_W + factor·… ·eval_X` reconstruction
+  /// (ppsnark.rs:1552), and it is exact with NO padding factor (lemma 2).
+  #[test]
+  fn coeff_col_value_reconstruction() {
+    let m = 5usize; // log N
+    let n = 1usize << m;
+    let num_vars = 1usize << (m - 1); // |W| block size (arbitrary split for the test)
+
+    // z = [W (num_vars entries), u, X...] then zero-padded to N.
+    let w: Vec<Fr> = (0..num_vars)
+      .map(|i| Fr::from((3 * i + 1) as u64))
+      .collect();
+    let u = Fr::from(9);
+    let x: Vec<Fr> = (0..(num_vars - 1))
+      .map(|i| Fr::from((2 * i + 5) as u64))
+      .collect();
+    let z: Vec<Fr> = w
+      .iter()
+      .cloned()
+      .chain(std::iter::once(u))
+      .chain(x.iter().cloned())
+      .collect();
+    let mut mem_col = vec![Fr::ZERO; n];
+    mem_col[..z.len()].copy_from_slice(&z);
+
+    // Split into disjoint padded blocks: W in [0, num_vars), IO in [num_vars, ...).
+    let mut w_block = vec![Fr::ZERO; n];
+    w_block[..w.len()].copy_from_slice(&w);
+    let mut io_block = vec![Fr::ZERO; n];
+    for (i, zi) in z.iter().enumerate().skip(w.len()) {
+      io_block[i] = *zi;
+    }
+
+    let r_inner: Vec<Fr> = (0..m).map(|i| Fr::from((4 * i + 3) as u64)).collect();
+
+    let direct = coeff_eval::<E>(&mem_col, &r_inner);
+    let recon = coeff_eval::<E>(&w_block, &r_inner) + coeff_eval::<E>(&io_block, &r_inner);
+    assert_eq!(direct, recon);
+  }
 }
