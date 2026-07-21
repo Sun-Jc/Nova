@@ -1682,5 +1682,9 @@ mod tests {
     }
     let io: Vec<<Ek as crate::traits::Engine>::Scalar> = vec![z0v, z1];
     assert!(snark.verify(&vk, &io).is_ok());
+
+    // Soundness: a wrong public output must be rejected (verify is not vacuous).
+    let bad_io = vec![z0v, z1 + <Ek as crate::traits::Engine>::Scalar::from(1)];
+    assert!(snark.verify(&vk, &bad_io).is_err());
   }
 }
