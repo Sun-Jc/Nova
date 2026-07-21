@@ -823,4 +823,40 @@ mod tests {
       direct_coeff_mle(&table, &r)
     );
   }
+
+  /// Architecture-B correctness anchor: the fingerprint table `T+r = mem·γ + id
+  /// + r` (built pointwise) can be reconstructed at the reduced point `r_inner`
+  /// from per-factor coeff evaluations:
+  /// `coeffMLE(T+r, r_inner) = γ·coeffMLE(mem, r_inner) + coeff_identity_eval(r_inner)
+  ///                           + r · U(r_inner)`,
+  /// where `U(r) = ∏(1 + r_i)` is coeffMLE of the all-ones table. This is the
+  /// linearity the verify-side memory reconstruction relies on — and note the
+  /// constant `+r` becomes `r · U(r_inner)`, NOT `+r` (a real coeff-vs-eval
+  /// difference vs ppsnark.rs:1511).
+  #[test]
+  fn coeff_fingerprint_reconstruction() {
+    let m = 4usize;
+    let n = 1usize << m;
+    let gamma = Fr::from(11);
+    let r_const = Fr::from(7); // the memory-check `r` challenge
+
+    // mem is an arbitrary memory-contents table; id is [0..N).
+    let mem: Vec<Fr> = (0..n).map(|i| Fr::from((3 * i + 5) as u64)).collect();
+    let id: Vec<Fr> = (0..n as u64).map(Fr::from).collect();
+    // T+r built pointwise: (mem·γ + id + r) per corner.
+    let t_plus_r: Vec<Fr> = (0..n).map(|i| mem[i] * gamma + id[i] + r_const).collect();
+
+    let r_inner: Vec<Fr> = (0..m).map(|i| Fr::from((2 * i + 3) as u64)).collect();
+
+    // Direct coeff-MLE of the pointwise table.
+    let direct = coeff_eval::<E>(&t_plus_r, &r_inner);
+
+    // Per-factor reconstruction.
+    let u_at_r: Fr = r_inner.iter().fold(Fr::ONE, |a, ri| a * (Fr::ONE + *ri));
+    let recon = gamma * coeff_eval::<E>(&mem, &r_inner)
+      + coeff_identity_eval::<E>(m, &r_inner)
+      + r_const * u_at_r;
+
+    assert_eq!(direct, recon);
+  }
 }
